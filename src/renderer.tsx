@@ -1,3 +1,6 @@
+import { installBrowserIpcMock } from "./browser-ipc-mock";
+installBrowserIpcMock();
+
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { router } from "./router";

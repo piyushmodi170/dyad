@@ -41,5 +41,8 @@ export default defineConfig({
   },
   define: {
     "process.env.NODE_ENV": JSON.stringify("development"),
+    "__REPLIT_ANTHROPIC_KEY__": JSON.stringify(process.env.ANTHROPIC_API_KEY ?? ""),
+    "__REPLIT_OPENAI_KEY__": JSON.stringify(process.env.OPENAI_API_KEY ?? ""),
+    "__REPLIT_GOOGLE_KEY__": JSON.stringify(process.env.GOOGLE_API_KEY ?? ""),
   },
 });
