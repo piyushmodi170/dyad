@@ -1,7 +1,10 @@
 import path from "path";
+import { fileURLToPath } from "url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ReactCompilerConfig = {};
 
@@ -22,10 +25,18 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 5000,
-    allowedHosts: true,
     strictPort: true,
+    allowedHosts: "all",
+    hmr: {
+      host: process.env.REPLIT_DEV_DOMAIN,
+      clientPort: 443,
+      protocol: "wss",
+    },
     watch: {
       ignored: ["**/.local/**", "**/node_modules/**"],
+    },
+    headers: {
+      "Cache-Control": "no-store",
     },
   },
   define: {
