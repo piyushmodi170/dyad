@@ -47,7 +47,7 @@ function buildDefaultSettings() {
   };
 }
 
-const DEFAULT_USER_SETTINGS = buildDefaultSettings();
+let _currentSettings = buildDefaultSettings();
 
 const DEFAULT_NODE_STATUS = {
   nodeVersion: "v24.13.0",
@@ -68,14 +68,68 @@ const DEFAULT_SYSTEM_DEBUG_INFO = {
   nodeVersion: process?.versions?.node ?? "22.0.0",
 };
 
+const CLOUD_PROVIDERS = [
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    type: "cloud",
+    hasFreeTier: false,
+    websiteUrl: "https://console.anthropic.com/settings/keys",
+    gatewayPrefix: "anthropic/",
+    envVarName: "ANTHROPIC_API_KEY",
+  },
+  {
+    id: "google",
+    name: "Google",
+    type: "cloud",
+    hasFreeTier: true,
+    websiteUrl: "https://aistudio.google.com/app/apikey",
+    gatewayPrefix: "gemini/",
+    envVarName: "GEMINI_API_KEY",
+  },
+  {
+    id: "openai",
+    name: "OpenAI",
+    type: "cloud",
+    hasFreeTier: false,
+    websiteUrl: "https://platform.openai.com/api-keys",
+    gatewayPrefix: "",
+    envVarName: "OPENAI_API_KEY",
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    type: "cloud",
+    hasFreeTier: true,
+    websiteUrl: "https://openrouter.ai/settings/keys",
+    gatewayPrefix: "openrouter/",
+    envVarName: "OPENROUTER_API_KEY",
+  },
+  {
+    id: "xai",
+    name: "xAI",
+    type: "cloud",
+    hasFreeTier: false,
+    websiteUrl: "https://console.x.ai/",
+    gatewayPrefix: "xai/",
+    envVarName: "XAI_API_KEY",
+    secondary: true,
+  },
+];
+
 /**
  * Map from IPC channel name to the value (or factory) to return.
  * Factories receive the input argument if needed.
  */
 const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknown)> = {
-  // Settings
-  "get-user-settings": DEFAULT_USER_SETTINGS,
-  "set-user-settings": DEFAULT_USER_SETTINGS,
+  // Settings — persisted in-memory so saves actually stick during the session
+  "get-user-settings": () => _currentSettings,
+  "set-user-settings": (newSettings: unknown) => {
+    if (newSettings && typeof newSettings === "object") {
+      _currentSettings = { ..._currentSettings, ...(newSettings as object) } as typeof _currentSettings;
+    }
+    return _currentSettings;
+  },
 
   // Apps
   "list-apps": { apps: [] },
@@ -122,8 +176,8 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "agent-tool:get-tools": [],
   "agent-tool:set-consent": null,
 
-  // Language models
-  "get-language-model-providers": [],
+  // Language models — return real provider data so Settings pages work
+  "get-language-model-providers": CLOUD_PROVIDERS,
   "get-language-models": [],
   "get-language-models-by-providers": {},
   "create-custom-language-model-provider": null,
