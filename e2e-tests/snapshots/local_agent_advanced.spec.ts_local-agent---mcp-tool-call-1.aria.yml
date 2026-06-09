@@ -15,6 +15,8 @@
 - text: claude-opus-4-5
 - img
 - text: less than a minute ago
+- img
+- text: "Version 2: (1 files changed)"
 - button "Copy Request ID":
   - img
   - text: ""
@@ -24,19 +26,19 @@
   - img
   - text: ""
   - img
-- 'button "Error MCP tool ''testing-mcp-server__calculator_add'' failed: keyValidator._parse is not a function Copy Fix with AI"':
+- button "Tool Result testing-mcp-server calculator_add":
   - img
   - text: ""
   - img
-  - button "Copy":
-    - img
-    - text: ""
-  - button "Fix with AI":
-    - img
-    - text: ""
+- button /Script Call calculator_add through MCP \d+[hmsp]+/:
+  - img
+  - text: ""
+  - img
 - paragraph: The sum of 5 and 3 is 8. The calculation was performed successfully using the MCP calculator tool.
 - button "Copy":
   - img
+- img
+- text: Approved
 - img
 - text: claude-opus-4-5
 - img

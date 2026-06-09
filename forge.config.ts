@@ -1,5 +1,8 @@
 import { windowsSign } from "./windowsSign";
-import { removeUnsupportedWindowsSigningFiles } from "./src/lib/windows_signing";
+import {
+  removeUnusedAppPackageFiles,
+  removeUnusedCopiedResources,
+} from "./src/lib/packaging_cleanup";
 import type { ForgeConfig } from "@electron-forge/shared-types";
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
@@ -10,8 +13,19 @@ import { VitePlugin } from "@electron-forge/plugin-vite";
 import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
+import { readFileSync } from "fs";
+import { createRequire } from "module";
 
 console.log("AZURE_CODE_SIGNING_DLIB", process.env.AZURE_CODE_SIGNING_DLIB);
+
+const require = createRequire(import.meta.url);
+const { isPrereleaseVersion } =
+  require("./scripts/release-version-utils.js") as {
+    isPrereleaseVersion: (version: string) => boolean;
+  };
+const packageJson = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 const pgRuntimeDependencies = [
   "pg",
@@ -108,21 +122,22 @@ if (isWindowsSigningEnabled && !process.env.AZURE_CODE_SIGNING_DLIB) {
 const config: ForgeConfig = {
   packagerConfig: {
     windowsSign: isWindowsSigningEnabled ? windowsSign : undefined,
-    afterCopy: isWindowsSigningEnabled
-      ? [
-          (buildPath, _electronVersion, platform, _arch, callback) => {
-            if (platform !== "win32") {
-              callback();
-              return;
-            }
-
-            removeUnsupportedWindowsSigningFiles(buildPath).then(
-              () => callback(),
-              (error) => callback(error as Error),
-            );
-          },
-        ]
-      : undefined,
+    afterCopy: [
+      (buildPath, _electronVersion, platform, arch, callback) => {
+        removeUnusedAppPackageFiles(buildPath, platform, arch).then(
+          () => callback(),
+          (error) => callback(error as Error),
+        );
+      },
+    ],
+    afterCopyExtraResources: [
+      (buildPath, _electronVersion, platform, _arch, callback) => {
+        removeUnusedCopiedResources(buildPath, platform).then(
+          () => callback(),
+          (error) => callback(error as Error),
+        );
+      },
+    ],
     protocols: [
       {
         name: "Dyad",
@@ -204,7 +219,7 @@ const config: ForgeConfig = {
         },
         draft: true,
         force: true,
-        prerelease: true,
+        prerelease: isPrereleaseVersion(packageJson.version),
       },
     },
   ],

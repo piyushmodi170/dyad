@@ -51,6 +51,7 @@ function getGeminiThinkingBudgetTokens(
     case "medium":
       return 4_000;
     case "high":
+      // -1 lets Gemini dynamically decide its budget (its max).
       return -1;
     default:
       return 4_000; // Default to medium
@@ -78,9 +79,8 @@ function getAnthropicEngineThinkingOptions(settings: UserSettings) {
       type: "adaptive",
       display: "summarized",
     },
-    // We use reasoning_effort because it should get mapped to output_config.effort
-    // acording to https://docs.litellm.ai/docs/providers/anthropic_effort
-    reasoning_effort: getThinkingBudgetEffort(settings.thinkingBudget),
+    // Use anthropic's native effort config.
+    output_config: { effort: getThinkingBudgetEffort(settings.thinkingBudget) },
   };
 }
 

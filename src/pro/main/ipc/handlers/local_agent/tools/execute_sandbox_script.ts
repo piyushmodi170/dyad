@@ -129,14 +129,14 @@ Use this when you need to slice, search, count, aggregate, or summarize file con
 
 Supported language surface:
 - let/const, functions, closures, arrow functions, async/await, promises, arrays, plain objects, Map, Set, if/switch, loops, break/continue, try/catch/finally, throw, template literals, destructuring, optional chaining, nullish coalescing, JSON, Math, and conservative Array/String/Object/Date/Intl/RegExp helpers.
-- Top-level await is not supported because scripts are not modules. When calling async host functions, wrap the script body in an async function and call it, e.g. \`async function main() { const text = await read_file("attachments:data.csv"); return text.length; } main();\`.
+- Top-level await is supported. Top-level return is not supported; return the final expression value instead, e.g. \`const text = await read_file("attachments:data.csv"); text.length;\`.
 - The script has no ambient authority. It can only act through the host functions below.
 
 Recommendations:
 - Avoid defining nested helper functions in the main function.
 
 Unsupported / unavailable:
-- No import/export, require, CommonJS, npm packages, Node APIs, browser/DOM APIs, process, module, exports, global, environment variables, subprocesses, network/fetch, timers, eval, Function constructor, with, classes, generators, custom iterator authoring, Symbols, WeakMap, WeakSet, typed arrays, ArrayBuffer, shared memory, atomics, Proxy, accessors, full prototype/property-descriptor semantics, or arbitrary filesystem access.
+- No var, import/export, require, CommonJS, npm packages, Node APIs, browser/DOM APIs, process, module, exports, global, environment variables, subprocesses, network/fetch, fetch, timers, setTimeout, setInterval, eval, Function constructor, with, classes, generators, custom iterator authoring, Symbols, WeakMap, WeakSet, typed arrays, ArrayBuffer, shared memory, atomics, Proxy, accessors, full prototype/property-descriptor semantics, or arbitrary filesystem access.
 - String.prototype.localeCompare is not supported; compare with <, >, or === instead.
 - \`console.*\` is not available.
 - Unsupported syntax or unsupported built-in behavior fails closed with an error. Rewrite using simpler JavaScript when that happens.
@@ -145,16 +145,17 @@ Avoid returning shared references:
 
 \`\`\`
 const row = { key: "x", total: 1 };
-return { a: row, b: row }; // rejected
+({ a: row, b: row }); // rejected
 \`\`\`
 
-Return cloned/plain rows instead:
+Use cloned/plain rows instead:
 
 \`\`\`
-return {
+const row = { key: "x", total: 1 };
+({
   a: { key: row.key, total: row.total },
   b: { key: row.key, total: row.total }
-};
+});
 \`\`\`
 
 Execution thread:
@@ -200,6 +201,35 @@ ${typeDefsBlock}
 \`\`\``;
 }
 
+// Search-mode addendum: used when the `enableMcpToolSearch` experiment is on.
+// The per-tool declarations are NOT listed here to keep context lean; the
+// model discovers them via `search_mcp_tools` and then calls the returned
+// host functions from inside the script.
+function buildServerInventory(defs: McpToolDef[]): string {
+  const counts = new Map<string, number>();
+  for (const def of defs) {
+    const name = def.serverName;
+    if (!name) continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  if (counts.size === 0) return "";
+  const list = [...counts.entries()]
+    .map(([name, n]) => `${name} (${n} tool${n === 1 ? "" : "s"})`)
+    .join(", ");
+  return `\nConnected MCP servers: ${list}. Search within one with the \`server\` param, or across all by omitting it.`;
+}
+
+function buildMcpSearchAddendum(defs: McpToolDef[]): string {
+  return `
+
+MCP tools can also be invoked from inside the script. To use one:
+1. Call the \`search_mcp_tools\` tool with keywords (optionally a \`server\`) to get the TypeScript declarations of the tools you need.
+2. Call those declared host functions inside this script, exactly as declared.
+${buildServerInventory(defs)}
+- Each MCP tool invocation may trigger a user consent prompt. A denied call throws.
+- MCP host functions are only available on the 'main' execution thread. They are NOT available on the 'worker' thread — if you need both heavy compute and MCP calls, split into two scripts (worker for the compute, then main for the MCP follow-up).`;
+}
+
 /**
  * Build the full tool description, appending the MCP host-function
  * declarations and usage notes when any MCP server is enabled. The
@@ -212,10 +242,17 @@ ${typeDefsBlock}
  */
 export async function buildExecuteSandboxScriptDescription(
   precomputedDefs?: McpToolDef[],
+  options?: { useSearch?: boolean },
 ): Promise<string> {
   const defs = precomputedDefs ?? (await collectMcpToolDefs());
   if (defs.length === 0) {
     return FILES_ONLY_PREAMBLE;
+  }
+  // Search mode (experiment on): point the model at `search_mcp_tools`
+  // instead of inlining every tool's declarations. The full per-tool block is
+  // only embedded when search is off.
+  if (options?.useSearch) {
+    return FILES_ONLY_PREAMBLE + buildMcpSearchAddendum(defs);
   }
   return FILES_ONLY_PREAMBLE + buildMcpAddendum(buildMcpTypeDefsBlock(defs));
 }

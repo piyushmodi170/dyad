@@ -234,6 +234,12 @@ async function getProModelClient({
           });
         }
 
+        if (resolvedModel.providerId === "anthropic") {
+          return provider.anthropic(resolvedModelId, {
+            providerId: resolvedModel.providerId,
+          });
+        }
+
         return provider(resolvedModelId, {
           providerId: resolvedModel.providerId,
         });
@@ -268,6 +274,12 @@ async function getProModelClient({
   ) {
     return {
       model: provider.responses(modelId, { providerId: model.provider }),
+      builtinProviderId: model.provider,
+    };
+  }
+  if (model.provider === "anthropic") {
+    return {
+      model: provider.anthropic(modelId, { providerId: model.provider }),
       builtinProviderId: model.provider,
     };
   }
