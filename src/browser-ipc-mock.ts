@@ -380,6 +380,87 @@ async function callGoogleAI(
   return (data as any).candidates?.[0]?.content?.parts?.[0]?.text ?? "(empty response)";
 }
 
+/** Real SSE streaming for Google Gemini — fires onChunk with accumulated text */
+async function callGoogleAIStreaming(
+  apiKey: string,
+  model: string,
+  history: { role: string; content: string }[],
+  newPrompt: string,
+  onChunk: (accumulated: string) => void,
+): Promise<void> {
+  const allMessages = [...history, { role: "user", content: newPrompt }];
+  const contents = allMessages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const safeModel = model || "gemini-flash-latest";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents,
+      generationConfig: { maxOutputTokens: 8192 },
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
+    throw new Error((err as any)?.error?.message ?? resp.statusText);
+  }
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let accumulated = "";
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? ""; // keep the incomplete last line
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr || jsonStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const chunk: string = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+        if (chunk) {
+          accumulated += chunk;
+          onChunk(accumulated);
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+  }
+
+  // Process any remaining buffer
+  if (buffer.startsWith("data: ")) {
+    const jsonStr = buffer.slice(6).trim();
+    if (jsonStr && jsonStr !== "[DONE]") {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const chunk: string = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+        if (chunk) {
+          accumulated += chunk;
+          onChunk(accumulated);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  if (!accumulated) {
+    onChunk("(empty response from AI)");
+  }
+}
+
 async function callOpenAI(
   apiKey: string,
   model: string,
@@ -480,50 +561,100 @@ async function handleChatStream(params: unknown): Promise<void> {
   // Announce stream start
   fireEvent("chat:stream:start", { chatId });
 
+  // Add user message to store
+  const userMsg = makeMessage(chatId, "user", prompt);
+  addMessage(userMsg);
+
+  // Update chat title on first message
+  const chat = _chats.get(chatId);
+  if (chat && chat.title === "New Chat") {
+    chat.title = prompt.slice(0, 60) + (prompt.length > 60 ? "…" : "");
+  }
+
+  // Emit chunk with the user message immediately so it appears in UI
+  fireEvent("chat:response:chunk", {
+    chatId,
+    messages: getChatMessages(chatId).map(stripChatId),
+  });
+
+  // Create a placeholder assistant message that we'll fill in as tokens stream
+  const assistantMsg = makeMessage(chatId, "assistant", "");
+  addMessage(assistantMsg);
+
+  const { provider, name: modelName } = _currentSettings.selectedModel as { provider: string; name: string };
+  const apiKey = getApiKeyForProvider(provider);
+
   try {
-    // Add user message to store
-    const userMsg = makeMessage(chatId, "user", prompt);
-    addMessage(userMsg);
+    if (!apiKey) {
+      const configuredProvider = CLOUD_PROVIDERS.find((p) => getApiKeyForProvider(p.id));
+      if (configuredProvider) {
+        assistantMsg.content = `⚠️ No API key for "${provider}". But you have ${configuredProvider.name} configured — switch to it in the model picker (bottom of chat).`;
+      } else {
+        assistantMsg.content = `⚠️ No AI provider is configured yet. Go to ⚙️ Settings → Click "Setup Google Gemini API Key" (free) → paste your key → Save Key. Then come back and try again.`;
+      }
+      fireEvent("chat:response:chunk", {
+        chatId,
+        messages: getChatMessages(chatId).map(stripChatId),
+      });
+    } else {
+      // Get history BEFORE this user message and the placeholder assistant message
+      const history = getChatMessages(chatId).filter(
+        (m) => m.id !== userMsg.id && m.id !== assistantMsg.id,
+      );
 
-    // Get history BEFORE this message for the AI call
-    const history = getChatMessages(chatId).filter((m) => m.id !== userMsg.id);
+      const onChunk = (text: string) => {
+        assistantMsg.content = text;
+        fireEvent("chat:response:chunk", {
+          chatId,
+          messages: getChatMessages(chatId).map(stripChatId),
+        });
+      };
 
-    // Emit a chunk with the user message so the UI shows it immediately
-    fireEvent("chat:response:chunk", {
-      chatId,
-      messages: getChatMessages(chatId).map(stripChatId),
-    });
-
-    // Make the real AI call
-    const aiText = await callAI(chatId, prompt, history);
-
-    // Add assistant message to store
-    const assistantMsg = makeMessage(chatId, "assistant", aiText);
-    addMessage(assistantMsg);
-
-    // Update chat title on first message
-    const chat = _chats.get(chatId);
-    if (chat && chat.title === "New Chat") {
-      chat.title = prompt.slice(0, 60) + (prompt.length > 60 ? "…" : "");
+      if (provider === "google") {
+        await callGoogleAIStreaming(apiKey, modelName, history, prompt, onChunk);
+      } else if (provider === "openai") {
+        const text = await callOpenAI(apiKey, modelName, history, prompt);
+        simulateStreaming(text, onChunk);
+      } else if (provider === "anthropic") {
+        const text = await callAnthropic(apiKey, modelName, history, prompt);
+        simulateStreaming(text, onChunk);
+      } else if (provider === "openrouter") {
+        const text = await callOpenRouter(apiKey, modelName, history, prompt);
+        simulateStreaming(text, onChunk);
+      } else {
+        assistantMsg.content = `⚠️ Provider "${provider}" is not yet supported in browser mode. Try Google (free tier available).`;
+        fireEvent("chat:response:chunk", {
+          chatId,
+          messages: getChatMessages(chatId).map(stripChatId),
+        });
+      }
     }
 
-    // Emit final chunk with all messages
-    fireEvent("chat:response:chunk", {
-      chatId,
-      messages: getChatMessages(chatId).map(stripChatId),
-    });
-
-    // Emit end event
     fireEvent("chat:response:end", {
       chatId,
       updatedFiles: false,
-      totalTokens: Math.round((prompt.length + aiText.length) / 4),
+      totalTokens: Math.round((prompt.length + assistantMsg.content.length) / 4),
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    assistantMsg.content = `⚠️ Error: ${message}`;
+    fireEvent("chat:response:chunk", {
+      chatId,
+      messages: getChatMessages(chatId).map(stripChatId),
+    });
     fireEvent("chat:response:error", { chatId, error: message });
   } finally {
     fireEvent("chat:stream:end", { chatId });
+  }
+}
+
+/** Simulate streaming for non-SSE providers by emitting word-by-word chunks */
+function simulateStreaming(fullText: string, onChunk: (accumulated: string) => void) {
+  const words = fullText.split(/(\s+)/);
+  let accumulated = "";
+  for (const word of words) {
+    accumulated += word;
+    onChunk(accumulated);
   }
 }
 
@@ -634,11 +765,37 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     return null;
   },
 
-  "run-app": null,
+  "run-app": (params: unknown) => {
+    const appId = (params as { appId: number }).appId;
+    // Emit messages so the preview panel shows a browser-mode notice instead of hanging
+    setTimeout(() => {
+      fireEvent("app:output", {
+        type: "stderr",
+        message: "⚠️  Live preview is not available in browser mode.",
+        appId,
+        timestamp: Date.now(),
+      });
+      fireEvent("app:output", {
+        type: "stderr",
+        message: "Run Dyad as a desktop Electron app for full preview & file-system features.",
+        appId,
+        timestamp: Date.now() + 1,
+      });
+      // Signal the process exited so the UI shows an error state vs. "Waiting for server logs…"
+      fireEvent("app:output", {
+        type: "app-exit",
+        message: "Process exited (browser mode — no runtime available).",
+        appId,
+        exitCode: 1,
+        timestamp: Date.now() + 2,
+      });
+    }, 200);
+    return null;
+  },
   "stop-app": null,
   "restart-app": null,
   "search-app": [],
-  "check-app-name": { available: true },
+  "check-app-name": { exists: false },
   "change-app-location": null,
   "select-app-location": null,
   "get-cloud-sandbox-status": null,
@@ -762,7 +919,12 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "select-node-folder": { path: null, canceled: true, selectedPath: null },
   "get-node-path": null,
   "reload-env-path": null,
-  "select-app-folder": { path: null, name: null },
+  "select-app-folder": () =>
+    Promise.reject(
+      new Error(
+        "Local folder access is not available in browser mode.\n\nTo import a local project, download and run the Dyad desktop app.",
+      ),
+    ),
   "get-custom-apps-folder": {
     path: "/home/user/dyad-apps",
     isPathAvailable: true,
@@ -793,10 +955,51 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "portal:migrate-create": null,
 
   // ── GitHub ────────────────────────────────────────────────────────────────
-  "github:list-repos": [],
+  // github:get-user returns null → triggers OAuth flow; we fire a flow-error
+  // event instead so the dialog shows an error instead of hanging.
   "github:get-user": null,
+  "github:start-flow": (params: unknown) => {
+    const { appId } = (params ?? { appId: null }) as { appId: number | null };
+    setTimeout(() => {
+      fireEvent("github:flow-error", {
+        error:
+          "GitHub authentication is not available in browser mode.\n\nDownload the Dyad desktop app to connect your GitHub account.",
+      });
+    }, 300);
+    void appId;
+    return undefined;
+  },
+  "github:list-repos": [],
+  "github:get-repo-branches": [],
+  "github:is-repo-available": { available: false },
   "github:create-repo": null,
   "github:push": null,
+  "github:fetch": null,
+  "github:pull": null,
+  "github:rebase": null,
+  "github:rebase-abort": null,
+  "github:merge-abort": null,
+  "github:rebase-continue": null,
+  "github:list-local-branches": [],
+  "github:list-remote-branches": [],
+  "github:create-branch": null,
+  "github:switch-branch": null,
+  "github:delete-branch": null,
+  "github:rename-branch": null,
+  "github:merge-branch": null,
+  "github:get-conflicts": [],
+  "github:get-git-state": null,
+  "github:disconnect": null,
+  "github:list-collaborators": [],
+  "github:invite-collaborator": null,
+  "github:remove-collaborator": null,
+  "github:clone-repo-from-url": () =>
+    Promise.reject(
+      new Error(
+        "GitHub clone is not available in browser mode.\n\nUse the Dyad desktop app to clone GitHub repositories.",
+      ),
+    ),
+  "github:connect-existing-repo": null,
 
   // ── Supabase / Neon / Vercel ──────────────────────────────────────────────
   "supabase:list-organizations": [],
@@ -843,9 +1046,28 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     hoursUntilReset: null,
   },
 
-  // ── Versions ─────────────────────────────────────────────────────────────
+  // ── Versions / branches ───────────────────────────────────────────────────
   "versions:list": [],
   "versions:checkout": null,
+  "list-versions": (_params: unknown) => [],
+  "get-current-branch": (_params: unknown) => ({ branch: "main" }),
+  "revert-version": null,
+  "checkout-version": null,
+
+  // ── Proposals ─────────────────────────────────────────────────────────────
+  "get-proposal": (_params: unknown) => null,
+
+  // ── Import ────────────────────────────────────────────────────────────────
+  "import-app": (params: unknown) => {
+    const p = params as { path: string; appName: string };
+    const app = makeApp(p.appName ?? "Imported App");
+    _apps.set(app.id, app);
+    const chat = makeChat(app.id);
+    _chats.set(chat.id, chat);
+    _messagesByChatId.set(chat.id, []);
+    return { appId: app.id, chatId: chat.id };
+  },
+  "check-ai-rules": (_params: unknown) => ({ exists: false }),
 
   // ── Checkout (Dyad Pro) ───────────────────────────────────────────────────
   "checkout:get-version": null,
