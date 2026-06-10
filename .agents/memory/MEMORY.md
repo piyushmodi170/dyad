@@ -1,0 +1,1 @@
+- [Browser IPC mock patterns](browser-ipc-mock.md) — key patterns for making Dyad work in browser mode without Electron
