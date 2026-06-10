@@ -319,7 +319,12 @@ async function callAI(chatId: number, prompt: string, existingMessages: StoredMe
   const apiKey = getApiKeyForProvider(provider);
 
   if (!apiKey) {
-    return `⚠️ No API key configured for provider "${provider}". Please add your key in Settings → (provider name).`;
+    // Find any provider that does have a key and suggest it
+    const configuredProvider = CLOUD_PROVIDERS.find((p) => getApiKeyForProvider(p.id));
+    if (configuredProvider) {
+      return `⚠️ No API key for "${provider}". But you have ${configuredProvider.name} configured — switch to it in the model picker (bottom of chat).`;
+    }
+    return `⚠️ No AI provider is configured yet. Go to ⚙️ Settings → Click "Setup Google Gemini API Key" (free) → paste your key → Save Key. Then come back and try again.`;
   }
 
   const history = existingMessages.map((m) => ({ role: m.role, content: m.content }));
