@@ -24,8 +24,16 @@ Must return `Record<string, LanguageModel[]>` with models for each provider that
 ### Settings persistence
 Settings are stored in `localStorage` under key `"dyad-browser-ipc-settings"`. The `set-user-settings` handler must deep-merge `providerSettings` (not shallow-merge) and call `saveSettings()` to persist. `loadSettings()` runs on mock init.
 
-### App/chat/file persistence
-All in-memory state (`_apps`, `_chats`, `_messagesByChatId`, `_appFiles`, `_nextId`) is persisted to `localStorage` under key `"dyad-browser-ipc-data"`. `loadData()` is called once at module init (after Map declarations). `saveData()` is a hoisted function declaration so it can be called from `addMessage()` which is defined above it. `saveData()` serializes Date objects to ISO strings and Maps to arrays; handles `QuotaExceededError` by retrying without file contents. Every mutating handler must call `saveData()` — including `create-app`, `delete-app`, `copy-app`, `rename-app`, `create-chat`, `delete-chat`, `delete-messages`, `edit-app-file`, `import-app`, `github:clone-repo-from-url`, and the file-write path in `handleChatStream`.
+### App/chat/file persistence (PostgreSQL via Express API)
+All in-memory state (`_apps`, `_chats`, `_messagesByChatId`, `_appFiles`, `_nextId`) is persisted to PostgreSQL via an Express API server (`server/index.ts`, port 3001). Vite proxies `/api` → `http://localhost:3001`. The workflow command runs both: `pnpm exec tsx server/index.ts & pnpm exec vite --config vite.web.config.mts`.
+
+- `saveData()` is fire-and-forget (`fetch POST /api/state`)
+- `initLoadData()` is async; stored in `_dataReady` promise
+- `mockInvoke` is now `async` and `await _dataReady` before dispatching — ensures no handler runs against empty state
+- On first load, if PostgreSQL returns null but localStorage has data, it auto-migrates and removes the localStorage entry
+- Fallback to localStorage if API unreachable (dev resilience)
+- Database table: `dyad_state (id TEXT PRIMARY KEY, data JSONB, updated_at TIMESTAMPTZ)` — single row, full state blob
+- Every mutating handler calls `saveData()`: `addMessage`, `create-app`, `delete-app`, `copy-app`, `rename-app`, `create-chat`, `delete-chat`, `delete-messages`, `edit-app-file`, `import-app`, `github:clone-repo-from-url`, and the file-write path in `handleChatStream`
 
 ### Real AI calls in browser
 - Google AI (Gemini): `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}` — supports CORS from browser

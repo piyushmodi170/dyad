@@ -39,6 +39,10 @@ export default defineConfig({
       "Cache-Control": "no-store",
     },
     proxy: {
+      "/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
       "/github-proxy/device/code": {
         target: "https://github.com",
         changeOrigin: true,

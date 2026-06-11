@@ -27,8 +27,12 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pnpm exec vite --config vite.web.config.mts"
+args = "pnpm exec tsx server/index.ts & pnpm exec vite --config vite.web.config.mts"
 waitForPort = 5000
+
+[[ports]]
+localPort = 3001
+externalPort = 3001
 
 [[ports]]
 localPort = 5000

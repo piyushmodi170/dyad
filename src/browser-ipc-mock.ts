@@ -312,101 +312,107 @@ function addMessage(msg: StoredMessage) {
 }
 
 // =============================================================================
-// Persistence — save/load all in-memory state to localStorage
+// Persistence — save/load all in-memory state via PostgreSQL API
 // =============================================================================
 
-const DATA_STORAGE_KEY = "dyad-browser-ipc-data";
+// Key kept for one-time localStorage → PostgreSQL migration only
+const LS_MIGRATION_KEY = "dyad-browser-ipc-data";
+
+// Resolves once the initial data load from the API is complete.
+// mockInvoke awaits this so no call is dispatched with stale empty state.
+let _dataReady: Promise<void>;
+
+function buildSerializedState() {
+  return {
+    nextId: _nextId,
+    apps: Array.from(_apps.entries()).map(([id, app]) => [
+      id,
+      { ...app, createdAt: app.createdAt.toISOString(), updatedAt: app.updatedAt.toISOString() },
+    ]),
+    chats: Array.from(_chats.entries()).map(([id, chat]) => [
+      id,
+      { ...chat, createdAt: chat.createdAt.toISOString() },
+    ]),
+    messagesByChatId: Array.from(_messagesByChatId.entries()).map(([chatId, msgs]) => [
+      chatId,
+      msgs.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
+    ]),
+    appFiles: Array.from(_appFiles.entries()).map(([appId, fileMap]) => [
+      appId,
+      Array.from(fileMap.entries()),
+    ]),
+  };
+}
+
+type SerializedState = ReturnType<typeof buildSerializedState>;
+
+function applySerializedState(data: SerializedState): void {
+  if (typeof data.nextId === "number") _nextId = data.nextId;
+  for (const [id, app] of (data.apps ?? []) as Array<[number, Record<string, unknown>]>) {
+    _apps.set(Number(id), {
+      ...(app as object),
+      createdAt: new Date(app.createdAt as string),
+      updatedAt: new Date(app.updatedAt as string),
+    } as StoredApp);
+  }
+  for (const [id, chat] of (data.chats ?? []) as Array<[number, Record<string, unknown>]>) {
+    _chats.set(Number(id), {
+      ...(chat as object),
+      createdAt: new Date(chat.createdAt as string),
+    } as StoredChat);
+  }
+  for (const [chatId, msgs] of (data.messagesByChatId ?? []) as Array<[number, Array<Record<string, unknown>>]>) {
+    _messagesByChatId.set(Number(chatId), msgs.map((m) => ({
+      ...(m as object),
+      createdAt: new Date(m.createdAt as string),
+    } as StoredMessage)));
+  }
+  for (const [appId, fileEntries] of (data.appFiles ?? []) as Array<[number, Array<[string, string]>]>) {
+    _appFiles.set(Number(appId), new Map(fileEntries));
+  }
+}
 
 function saveData(): void {
+  const state = buildSerializedState();
+  fetch("/api/state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(state),
+  }).catch((e) => {
+    console.warn("[browser-ipc-mock] Failed to save state to PostgreSQL:", e);
+  });
+}
+
+async function initLoadData(): Promise<void> {
   try {
-    const data = {
-      nextId: _nextId,
-      apps: Array.from(_apps.entries()).map(([id, app]) => [
-        id,
-        { ...app, createdAt: app.createdAt.toISOString(), updatedAt: app.updatedAt.toISOString() },
-      ]),
-      chats: Array.from(_chats.entries()).map(([id, chat]) => [
-        id,
-        { ...chat, createdAt: chat.createdAt.toISOString() },
-      ]),
-      messagesByChatId: Array.from(_messagesByChatId.entries()).map(([chatId, msgs]) => [
-        chatId,
-        msgs.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
-      ]),
-      appFiles: Array.from(_appFiles.entries()).map(([appId, fileMap]) => [
-        appId,
-        Array.from(fileMap.entries()),
-      ]),
-    };
-    localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(data));
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "QuotaExceededError") {
-      try {
-        const dataNoFiles = {
-          nextId: _nextId,
-          apps: Array.from(_apps.entries()).map(([id, app]) => [
-            id,
-            { ...app, createdAt: app.createdAt.toISOString(), updatedAt: app.updatedAt.toISOString() },
-          ]),
-          chats: Array.from(_chats.entries()).map(([id, chat]) => [
-            id,
-            { ...chat, createdAt: chat.createdAt.toISOString() },
-          ]),
-          messagesByChatId: Array.from(_messagesByChatId.entries()).map(([chatId, msgs]) => [
-            chatId,
-            msgs.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
-          ]),
-          appFiles: [],
-        };
-        localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(dataNoFiles));
-      } catch {
-        console.warn("[browser-ipc-mock] localStorage quota exceeded — data not fully saved");
-      }
+    const res = await fetch("/api/state");
+    if (!res.ok) throw new Error(`API responded ${res.status}`);
+    const data: SerializedState | null = await res.json();
+    if (data) {
+      applySerializedState(data);
+      console.debug(`[browser-ipc-mock] Loaded ${_apps.size} apps, ${_chats.size} chats from PostgreSQL`);
+      // Remove old localStorage data now that we're on PostgreSQL
+      try { localStorage.removeItem(LS_MIGRATION_KEY); } catch { /* ignore */ }
+      return;
     }
+    // API returned null — check localStorage for one-time migration
+    const raw = localStorage.getItem(LS_MIGRATION_KEY);
+    if (raw) {
+      applySerializedState(JSON.parse(raw) as SerializedState);
+      console.info(`[browser-ipc-mock] Migrated ${_apps.size} apps, ${_chats.size} chats from localStorage → PostgreSQL`);
+      saveData();
+      localStorage.removeItem(LS_MIGRATION_KEY);
+    }
+  } catch (e) {
+    console.warn("[browser-ipc-mock] API not available, falling back to localStorage:", e);
+    try {
+      const raw = localStorage.getItem(LS_MIGRATION_KEY);
+      if (raw) applySerializedState(JSON.parse(raw) as SerializedState);
+    } catch { /* ignore */ }
   }
 }
 
-function loadData(): void {
-  try {
-    const raw = localStorage.getItem(DATA_STORAGE_KEY);
-    if (!raw) return;
-    const data = JSON.parse(raw) as {
-      nextId?: number;
-      apps?: Array<[number, Record<string, unknown>]>;
-      chats?: Array<[number, Record<string, unknown>]>;
-      messagesByChatId?: Array<[number, Array<Record<string, unknown>>]>;
-      appFiles?: Array<[number, Array<[string, string]>]>;
-    };
-    if (typeof data.nextId === "number") _nextId = data.nextId;
-    for (const [id, app] of data.apps ?? []) {
-      _apps.set(Number(id), {
-        ...(app as object),
-        createdAt: new Date(app.createdAt as string),
-        updatedAt: new Date(app.updatedAt as string),
-      } as StoredApp);
-    }
-    for (const [id, chat] of data.chats ?? []) {
-      _chats.set(Number(id), {
-        ...(chat as object),
-        createdAt: new Date(chat.createdAt as string),
-      } as StoredChat);
-    }
-    for (const [chatId, msgs] of data.messagesByChatId ?? []) {
-      _messagesByChatId.set(Number(chatId), msgs.map((m) => ({
-        ...(m as object),
-        createdAt: new Date(m.createdAt as string),
-      } as StoredMessage)));
-    }
-    for (const [appId, fileEntries] of data.appFiles ?? []) {
-      _appFiles.set(Number(appId), new Map(fileEntries));
-    }
-    console.debug(`[browser-ipc-mock] Loaded ${_apps.size} apps, ${_chats.size} chats from storage`);
-  } catch (e) {
-    console.warn("[browser-ipc-mock] Failed to load persisted data:", e);
-  }
-}
-
-loadData();
+_dataReady = initLoadData();
 
 // =============================================================================
 // Event emitter (enables chat:stream events to fire back to listeners)
@@ -1634,14 +1640,15 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
 // Mock IPC implementation
 // =============================================================================
 
-function mockInvoke(channel: string, ...args: unknown[]): Promise<unknown> {
+async function mockInvoke(channel: string, ...args: unknown[]): Promise<unknown> {
+  await _dataReady;
   if (Object.prototype.hasOwnProperty.call(CHANNEL_DEFAULTS, channel)) {
     const val = CHANNEL_DEFAULTS[channel];
     const result = typeof val === "function" ? (val as Function)(...args) : val;
-    return Promise.resolve(result);
+    return result;
   }
   console.debug(`[browser-ipc-mock] unhandled channel: ${channel}`);
-  return Promise.resolve(null);
+  return null;
 }
 
 function mockOn(channel: string, listener: (...args: unknown[]) => void): () => void {
