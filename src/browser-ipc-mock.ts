@@ -246,25 +246,60 @@ function parseBrowserDyadWriteTags(response: string): Array<{ path: string; cont
 // System prompt for browser mode — tells AI to use dyad-write tags
 // =============================================================================
 
-const BROWSER_SYSTEM_PROMPT = `You are Dyad, an expert AI app builder.
+const BROWSER_SYSTEM_PROMPT = `You are Dyad, an expert AI app builder running inside a browser-based live preview environment.
 
-IMPORTANT: When creating or editing files you MUST use <dyad-write> tags — never use markdown code fences (triple backticks) alone for complete files.
+━━━ PREVIEW CONSTRAINT — CRITICAL ━━━
+Your output is rendered as a blob URL inside a sandboxed iframe.
+Local file references like <script src="./App.jsx"> or <link href="./styles.css"> WILL NOT LOAD.
+Only CDN URLs (https://unpkg.com/..., https://cdn.tailwindcss.com, etc.) work from a blob URL.
 
-Format:
+━━━ REQUIRED RULES FOR EVERY APP ━━━
+1. Use ONE "index.html" that is completely self-contained — everything the preview needs is inside it.
+2. Embed ALL custom CSS in <style> tags inside index.html.
+3. Embed ALL custom JavaScript/JSX in <script> tags inside index.html — never reference local .js/.jsx/.ts/.css files.
+4. Load ALL libraries from CDN:
+   • React 18 + ReactDOM: https://unpkg.com/react@18/umd/react.development.js and https://unpkg.com/react-dom@18/umd/react-dom.development.js
+   • JSX transpilation: https://unpkg.com/@babel/standalone/babel.min.js
+   • Tailwind CSS: https://cdn.tailwindcss.com
+   • Chart.js: https://cdn.jsdelivr.net/npm/chart.js
+   • Any other library: find it on unpkg.com or cdnjs.cloudflare.com
+5. For JSX, use <script type="text/babel"> — Babel will transpile it in-browser automatically.
+6. NEVER use <script type="module"> or ES import/export statements.
+7. NEVER reference local paths like ./App.jsx, ../styles.css, or /api/... in HTML src/href attributes.
+
+━━━ EXAMPLE REACT APP STRUCTURE ━━━
 <dyad-write path="index.html">
-...complete file content...
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My App</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* custom CSS here */
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    function App() {
+      return <div className="p-4">Hello World</div>;
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
 </dyad-write>
 
-Rules:
-- Wrap ALL file content in <dyad-write path="relative/path"> tags
-- Use realistic paths: "index.html", "src/App.jsx", "src/styles.css", etc.
-- Write complete, self-contained files — no placeholders or partial snippets
-- For browser preview, always include an "index.html" that loads the app
-- For React apps, create proper JSX component files and link them in index.html
-- Keep your prose explanations brief; the code is what matters
-- You may use <think>...</think> to plan before responding
-
-The user will see your code in a file editor with syntax highlighting and a live preview.`;
+━━━ FILE FORMAT ━━━
+Wrap ALL file content in <dyad-write path="..."> tags — never bare markdown code fences.
+Write complete files — no placeholders, no "// rest of code here".
+Keep prose explanations brief; the working code is what matters.
+You may use <think>...</think> to plan before responding.`;
 
 function makeApp(name: string): StoredApp {
   const id = nextId();
@@ -948,6 +983,50 @@ function trySetHtmlPreview(chatId: number, aiResponse: string) {
   // Ensure it's a full HTML document
   if (!html.includes("<html") && !html.includes("<!DOCTYPE")) {
     html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body>${html}</body></html>`;
+  }
+
+  // Inline any local file references from the virtual filesystem so blob URLs work.
+  // CDN URLs (https://...) are left untouched — only local ./path references are replaced.
+  if (appId) {
+    const fileMap = _appFiles.get(appId);
+    if (fileMap) {
+      const resolve = (ref: string) => {
+        if (/^https?:\/\/|^\/\//.test(ref)) return null; // CDN — skip
+        const key = ref.replace(/^\.\//, "");
+        return fileMap.get(key) ?? fileMap.get(ref) ?? null;
+      };
+
+      // <link rel="stylesheet" href="./styles.css"> → <style>…</style>
+      html = html.replace(
+        /<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*\/?>/gi,
+        (match, href) => {
+          const content = resolve(href);
+          return content != null ? `<style>${content}</style>` : match;
+        },
+      );
+      // also handle href-before-rel order
+      html = html.replace(
+        /<link[^>]+href=["']([^"']+)["'][^>]*rel=["']stylesheet["'][^>]*\/?>/gi,
+        (match, href) => {
+          const content = resolve(href);
+          return content != null ? `<style>${content}</style>` : match;
+        },
+      );
+
+      // <script src="./app.js"></script> → <script>…</script>
+      html = html.replace(
+        /<script([^>]*)src=["']([^"']+)["']([^>]*)><\/script>/gi,
+        (match, before, src, after) => {
+          const content = resolve(src);
+          if (content == null) return match;
+          // Preserve any type attribute (e.g. type="text/babel") but drop src
+          const attrs = (before + after)
+            .replace(/\bsrc=["'][^"']*["']/gi, "")
+            .trim();
+          return `<script${attrs ? " " + attrs : ""}>${content}</script>`;
+        },
+      );
+    }
   }
 
   try {

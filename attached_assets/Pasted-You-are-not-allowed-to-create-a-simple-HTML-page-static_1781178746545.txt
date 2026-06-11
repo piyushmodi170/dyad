@@ -1,0 +1,139 @@
+You are not allowed to create a simple HTML page, static UI, placeholder screen, mockup, or black screen application.
+
+Current issues:
+
+* Nothing is working.
+* The application only shows a black screen.
+* Features are not functional.
+* You are generating simple HTML instead of a complete full-stack web application.
+* No real backend logic exists.
+* No working database integration exists.
+* No working AI agent system exists.
+* No real chat functionality exists.
+
+Required Action:
+
+Build a COMPLETE PRODUCTION-READY FULL-STACK APPLICATION.
+
+Frontend:
+
+* React/Next.js modern dashboard.
+* Responsive desktop and mobile UI.
+* Real-time updates.
+* Authentication pages.
+* Settings page.
+* Skills marketplace page.
+* Agent management page.
+* Chat interface.
+* Workflow builder.
+
+Backend:
+
+* Node.js/NestJS/FastAPI backend.
+* REST APIs.
+* WebSocket support.
+* Authentication.
+* Role-based permissions.
+* Admin panel.
+* Logging system.
+* Error handling.
+* Monitoring.
+
+Database:
+
+* PostgreSQL.
+* Proper schema.
+* User management.
+* Skill storage.
+* Agent storage.
+* Conversation storage.
+* Task storage.
+* Workflow storage.
+
+AI Features:
+
+* Multi-agent architecture.
+* Supervisor agent.
+* Research agent.
+* Coding agent.
+* Sales agent.
+* Marketing agent.
+* Support agent.
+* Automation agent.
+* Planning agent.
+
+Skills System:
+
+* Import Skill.
+* Export Skill.
+* Create Skill.
+* Edit Skill.
+* Delete Skill.
+* Skill Marketplace.
+* Skill Categories.
+* Skill Versioning.
+* Skill Permissions.
+* Skill Sharing.
+
+Chat System:
+
+* ChatGPT-style chat.
+* Multi-session chat.
+* Chat history.
+* Agent selection.
+* File upload.
+* Voice input.
+* Voice output.
+* Skill execution inside chat.
+* Agent collaboration inside chat.
+
+Sub-Agent Requirements:
+
+* Multiple agents must work simultaneously.
+* Agents can delegate tasks to each other.
+* Agents can communicate internally.
+* Supervisor agent coordinates all agents.
+* Progress tracking for every task.
+* Live task status.
+* Task queue system.
+
+Admin Panel:
+
+* User management.
+* Skill management.
+* Agent management.
+* Analytics dashboard.
+* Billing management.
+* Subscription management.
+* Logs and monitoring.
+
+Mandatory Requirement:
+DO NOT STOP AT UI DESIGN.
+
+Every button must work.
+Every page must work.
+Every API must work.
+Every database action must work.
+Every agent must work.
+
+Run the application and verify:
+
+* No black screen.
+* No placeholder content.
+* No mock data.
+* No broken routes.
+* No missing APIs.
+* No console errors.
+* No runtime errors.
+
+Before marking any task complete:
+
+1. Build feature.
+2. Connect backend.
+3. Connect database.
+4. Test feature.
+5. Fix errors.
+6. Verify functionality.
+7. Provide evidence of working implementation.
+
+Do not return a simple HTML file. Deliver a fully functional full-stack AI platform with working frontend, backend, database, multi-agent orchestration, skills marketplace, chat system, admin panel, and production-ready architecture.
