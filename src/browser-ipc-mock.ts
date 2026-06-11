@@ -170,6 +170,35 @@ const _apps = new Map<number, StoredApp>();
 const _chats = new Map<number, StoredChat>();
 const _messagesByChatId = new Map<number, StoredMessage[]>();
 
+let _pendingImportFiles: File[] = [];
+
+// =============================================================================
+// GitHub helpers (browser mode)
+// =============================================================================
+
+const GITHUB_CLIENT_ID_BROWSER = "Ov23liWV2HdC0RBLecWx";
+const GITHUB_SCOPES_BROWSER = "repo,user,workflow";
+
+function getGithubToken(): string | null {
+  return (_currentSettings as Record<string, unknown> & { githubAccessToken?: { value: string } }).githubAccessToken?.value ?? null;
+}
+
+function githubAuthHeaders(): Record<string, string> {
+  const token = getGithubToken();
+  const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+let _githubPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopGithubPoll() {
+  if (_githubPollTimer !== null) {
+    clearTimeout(_githubPollTimer);
+    _githubPollTimer = null;
+  }
+}
+
 function makeApp(name: string): StoredApp {
   const id = nextId();
   const now = new Date();
@@ -855,7 +884,6 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "stop-app": null,
   "restart-app": null,
   "search-app": [],
-  "check-app-name": { exists: false },
   "change-app-location": null,
   "select-app-location": null,
   "get-cloud-sandbox-status": null,
@@ -979,12 +1007,45 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "select-node-folder": { path: null, canceled: true, selectedPath: null },
   "get-node-path": null,
   "reload-env-path": null,
-  "select-app-folder": () =>
-    Promise.reject(
-      new Error(
-        "Local folder access is not available in browser mode.\n\nTo import a local project, download and run the Dyad desktop app.",
-      ),
-    ),
+  "select-app-folder": () => {
+    return new Promise<{ path: string | null; name: string | null }>((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      (input as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true;
+
+      let settled = false;
+      const settle = (val: { path: string | null; name: string | null }) => {
+        if (!settled) {
+          settled = true;
+          resolve(val);
+        }
+      };
+
+      input.onchange = () => {
+        const files = input.files;
+        if (!files || files.length === 0) {
+          settle({ path: null, name: null });
+          return;
+        }
+        const folderName =
+          ((files[0] as File & { webkitRelativePath: string }).webkitRelativePath ?? "").split("/")[0] ||
+          "imported-app";
+        _pendingImportFiles = Array.from(files);
+        settle({ path: `/__browser_import__/${folderName}`, name: folderName });
+      };
+
+      (input as HTMLInputElement & { oncancel?: () => void }).oncancel = () =>
+        settle({ path: null, name: null });
+
+      window.addEventListener(
+        "focus",
+        () => setTimeout(() => settle({ path: null, name: null }), 600),
+        { once: true },
+      );
+
+      input.click();
+    });
+  },
   "get-custom-apps-folder": {
     path: "/home/user/dyad-apps",
     isPathAvailable: true,
@@ -1015,22 +1076,135 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "portal:migrate-create": null,
 
   // ── GitHub ────────────────────────────────────────────────────────────────
-  // github:get-user returns null → triggers OAuth flow; we fire a flow-error
-  // event instead so the dialog shows an error instead of hanging.
-  "github:get-user": null,
+  "github:get-user": async () => {
+    const token = getGithubToken();
+    if (!token) return null;
+    try {
+      const res = await fetch("https://api.github.com/user", { headers: githubAuthHeaders() });
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
+  },
+
   "github:start-flow": (params: unknown) => {
     const { appId } = (params ?? { appId: null }) as { appId: number | null };
-    setTimeout(() => {
-      fireEvent("github:flow-error", {
-        error:
-          "GitHub authentication is not available in browser mode.\n\nDownload the Dyad desktop app to connect your GitHub account.",
-      });
-    }, 300);
     void appId;
+    stopGithubPoll();
+
+    fireEvent("github:flow-update", { message: "Requesting device code from GitHub..." });
+
+    fetch("/github-proxy/device/code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ client_id: GITHUB_CLIENT_ID_BROWSER, scope: GITHUB_SCOPES_BROWSER }),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`GitHub responded with ${res.status}`);
+        return res.json() as Promise<{
+          device_code: string;
+          user_code: string;
+          verification_uri: string;
+          interval?: number;
+        }>;
+      })
+      .then((data) => {
+        fireEvent("github:flow-update", {
+          userCode: data.user_code,
+          verificationUri: data.verification_uri,
+          message: "Please authorize in your browser.",
+        });
+
+        let pollInterval = data.interval ?? 5;
+        const deviceCode = data.device_code;
+
+        const poll = () => {
+          fetch("/github-proxy/access-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              client_id: GITHUB_CLIENT_ID_BROWSER,
+              device_code: deviceCode,
+              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+            }),
+          })
+            .then((r) => r.json() as Promise<{
+              access_token?: string;
+              error?: string;
+              error_description?: string;
+            }>)
+            .then((tokenData) => {
+              if (tokenData.access_token) {
+                (_currentSettings as Record<string, unknown>).githubAccessToken = {
+                  value: tokenData.access_token,
+                  encryptionType: "plaintext",
+                };
+                saveSettings(_currentSettings);
+                fireEvent("github:flow-success", { message: "Successfully connected!" });
+              } else if (tokenData.error === "authorization_pending") {
+                fireEvent("github:flow-update", { message: "Waiting for authorization..." });
+                _githubPollTimer = setTimeout(poll, pollInterval * 1000);
+              } else if (tokenData.error === "slow_down") {
+                pollInterval += 5;
+                fireEvent("github:flow-update", { message: `GitHub asked to slow down. Retrying in ${pollInterval}s…` });
+                _githubPollTimer = setTimeout(poll, pollInterval * 1000);
+              } else if (tokenData.error === "expired_token") {
+                fireEvent("github:flow-error", { error: "Verification code expired. Please try again." });
+              } else if (tokenData.error === "access_denied") {
+                fireEvent("github:flow-error", { error: "Authorization denied by user." });
+              } else {
+                fireEvent("github:flow-error", {
+                  error: tokenData.error_description || tokenData.error || "Unknown error from GitHub.",
+                });
+              }
+            })
+            .catch((err) => {
+              fireEvent("github:flow-error", { error: `Poll error: ${err instanceof Error ? err.message : String(err)}` });
+            });
+        };
+
+        _githubPollTimer = setTimeout(poll, pollInterval * 1000);
+      })
+      .catch((err) => {
+        fireEvent("github:flow-error", {
+          error: `Failed to start GitHub auth: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+
     return undefined;
   },
-  "github:list-repos": [],
-  "github:get-repo-branches": [],
+
+  "github:list-repos": async () => {
+    const token = getGithubToken();
+    if (!token) return [];
+    try {
+      const res = await fetch(
+        "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator",
+        { headers: githubAuthHeaders() },
+      );
+      if (!res.ok) return [];
+      const repos = (await res.json()) as Array<{ name: string; full_name: string; private: boolean }>;
+      return repos.map((r) => ({ name: r.name, full_name: r.full_name, private: r.private }));
+    } catch {
+      return [];
+    }
+  },
+
+  "github:get-repo-branches": async (params: unknown) => {
+    const { owner, repo } = params as { owner: string; repo: string };
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/branches`,
+        { headers: githubAuthHeaders() },
+      );
+      if (!res.ok) return [];
+      return res.json();
+    } catch {
+      return [];
+    }
+  },
+
   "github:is-repo-available": { available: false },
   "github:create-repo": null,
   "github:push": null,
@@ -1049,16 +1223,49 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "github:merge-branch": null,
   "github:get-conflicts": [],
   "github:get-git-state": null,
-  "github:disconnect": null,
+  "github:disconnect": (_params: unknown) => {
+    (_currentSettings as Record<string, unknown>).githubAccessToken = undefined;
+    saveSettings(_currentSettings);
+    return null;
+  },
   "github:list-collaborators": [],
   "github:invite-collaborator": null,
   "github:remove-collaborator": null,
-  "github:clone-repo-from-url": () =>
-    Promise.reject(
-      new Error(
-        "GitHub clone is not available in browser mode.\n\nUse the Dyad desktop app to clone GitHub repositories.",
-      ),
-    ),
+
+  "github:clone-repo-from-url": async (params: unknown) => {
+    const { url, appName } = params as { url: string; appName?: string };
+
+    const match = url.match(/github\.com[:/]([^/]+)\/([^/\s]+?)(?:\.git)?\s*$/);
+    if (!match) return { error: "Invalid GitHub URL. Expected format: https://github.com/owner/repo" };
+
+    const [, owner, repo] = match;
+    const name = appName || repo;
+
+    try {
+      const infoRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}`,
+        { headers: githubAuthHeaders() },
+      );
+      if (!infoRes.ok) {
+        const errData = (await infoRes.json()) as { message?: string };
+        return { error: errData.message || `Could not access repository (${infoRes.status})` };
+      }
+
+      const app = makeApp(name);
+      _apps.set(app.id, app);
+      const chat = makeChat(app.id);
+      _chats.set(chat.id, chat);
+      _messagesByChatId.set(chat.id, []);
+
+      return {
+        app: { ...app, files: [], frameworkType: null, supabaseProjectName: null, vercelTeamSlug: null },
+        hasAiRules: false,
+      };
+    } catch (err) {
+      return { error: `Network error: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  },
+
   "github:connect-existing-repo": null,
 
   // ── Supabase / Neon / Vercel ──────────────────────────────────────────────
@@ -1127,6 +1334,13 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     _messagesByChatId.set(chat.id, []);
     return { appId: app.id, chatId: chat.id };
   },
+  "check-app-name": (params: unknown) => {
+    const { appName } = params as { appName: string };
+    const exists = Array.from(_apps.values()).some(
+      (a) => a.name.toLowerCase() === (appName ?? "").toLowerCase(),
+    );
+    return { exists };
+  },
   "check-ai-rules": (_params: unknown) => ({ exists: false }),
 
   // ── Checkout (Dyad Pro) ───────────────────────────────────────────────────
@@ -1191,6 +1405,8 @@ export function installBrowserIpcMock(): void {
       send: mockSend,
     },
   };
+
+  (win as typeof window & { __DYAD_BROWSER_MODE__?: boolean }).__DYAD_BROWSER_MODE__ = true;
 
   console.info(
     "[browser-ipc-mock] Electron IPC not available — installed browser mock. " +

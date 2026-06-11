@@ -38,6 +38,18 @@ export default defineConfig({
     headers: {
       "Cache-Control": "no-store",
     },
+    proxy: {
+      "/github-proxy/device/code": {
+        target: "https://github.com",
+        changeOrigin: true,
+        rewrite: () => "/login/device/code",
+      },
+      "/github-proxy/access-token": {
+        target: "https://github.com",
+        changeOrigin: true,
+        rewrite: () => "/login/oauth/access_token",
+      },
+    },
   },
   define: {
     "process.env.NODE_ENV": JSON.stringify("development"),
