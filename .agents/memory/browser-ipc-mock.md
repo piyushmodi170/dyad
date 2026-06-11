@@ -58,4 +58,13 @@ These are called on a short interval (~5s) and crash or warn if unhandled:
 ### HMR caveat for mock changes
 `installBrowserIpcMock()` runs once on page load and captures the `CHANNEL_DEFAULTS` object reference. HMR alone won't re-run `installBrowserIpcMock()` — new channel handlers only take effect after a full page reload.
 
+### Type-checking gotcha — use tsconfig.app.json, NOT tsconfig.json
+`tsconfig.json` has `"files": []` with project references, so `tsc --noEmit -p tsconfig.json` type-checks NOTHING and always exits 0 (false confidence). To actually type-check `src/`, run `tsc --noEmit -p tsconfig.app.json`. Vite/esbuild does not type-check, so this is the only way to catch real TS errors.
+
+### AI can edit existing code (fix bugs) via injected codebase context
+`handleChatStream` builds `buildCodebaseContext(appId)` from the app's virtual filesystem (`_appFiles`) and prepends it to the user prompt as `fullPrompt` (the stored user message keeps the raw prompt, so history doesn't bloat across turns). Without this the AI has no idea what code already exists and rewrites from scratch. Budgeted: 24KB/file, 100KB total, index.html prioritized.
+
+### Live preview refresh on manual edits
+`edit-app-file` calls `refreshPreviewForApp(appId)` → `publishHtmlPreview` rebuilds the blob URL from current `index.html` and re-fires `app:output` with `[dyad-proxy-server]started=[blob]`, which `useRunApp`'s `useAppOutputSubscription` turns into a new iframe src (Replit-style live refresh). `publishHtmlPreview` revokes the previous blob URL per-app (`_lastBlobUrls`) to avoid leaks.
+
 **How to apply:** Any time browser-ipc-mock.ts is modified, verify these five things: (1) event emitter is real, (2) create-app returns proper shape, (3) models-by-providers returns populated data for configured providers, (4) settings are persisted to localStorage, (5) providerSettingsRoute is a top-level route.

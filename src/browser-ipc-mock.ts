@@ -57,7 +57,7 @@ function buildDefaultSettings() {
         ? "gpt-4o"
         : "gemini-flash-latest";
 
-  return {
+  const defaults = {
     selectedModel: { name: modelName, provider },
     providerSettings: {
       anthropic: anthropicKey ? { apiKey: anthropicKey } : {},
@@ -65,16 +65,15 @@ function buildDefaultSettings() {
       google: googleKey ? { apiKey: googleKey } : {},
       openrouter: {},
       xai: {},
-      auto: {},
+      // Fake auto key so hasDyadProKey() returns true — unlocks Pro UI in browser mode
+      // (browser mock never routes calls to the auto/managed provider)
+      auto: { apiKey: { value: "browser-mode-pro-unlocked" } },
     } as Record<string, Record<string, unknown>>,
     selectedTemplateId: "react-vite",
     enableAutoUpdate: false,
     releaseChannel: "stable",
     enableDyadPro: true,
-    // Fake auto key so hasDyadProKey() returns true — unlocks Pro UI in browser mode
-    // (browser mock never routes calls to the auto/managed provider)
   };
-  defaults.providerSettings.auto = { apiKey: { value: "browser-mode-pro-unlocked" } };
   return defaults;
 }
 
@@ -312,6 +311,27 @@ USEFUL PAGES TO INCLUDE (pick what's relevant to the request):
 • /settings — profile, preferences, API keys, all saveable
 • /admin — user list, management actions
 • /[feature] — whatever the user specifically asked for
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  AI-AGENT / SKILLS PLATFORM APPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When the user asks for an "AI platform", "agent system", "skills marketplace", or anything similar, you MUST build these as fully working features (not labels):
+
+MULTI-AGENT SYSTEM (an Agents page):
+• A Supervisor agent that receives a task and delegates sub-tasks to specialized agents.
+• Specialized agents: Research, Coding, Sales, Marketing, Support, Automation, Planning.
+• Render each agent as a card showing name, role, and live status (idle → working → done).
+• When the user submits a task, simulate the Supervisor splitting it and each agent "working" via setInterval, updating statuses and a shared activity/collaboration log in real time.
+• A live task queue with progress bars and per-task status.
+
+SKILLS SYSTEM (a Skills page + Marketplace):
+• Create Skill (form), Edit Skill, Delete Skill — full CRUD, persisted in localStorage.
+• Import Skill (read an uploaded .json file via FileReader) and Export Skill (download as .json via Blob).
+• Skill Marketplace: a grid of installable skills with categories/filtering.
+• Skill Categories, Skill Versioning (bump version on edit), Skill Permissions (toggle), Skill Sharing (copy a share link/code).
+• Each skill is an object: { id, name, description, category, version, permissions, code }.
+
+These must be REAL: buttons save/delete/import/export actual data, agents visibly change status, the marketplace installs into "My Skills". No placeholders.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   REQUIRED CDN STACK
@@ -814,7 +834,7 @@ async function callAnthropic(
     { role: "user" as const, content: newPrompt },
   ];
 
-  const body: Record<string, unknown> = { model: model || "claude-sonnet-4-5", messages, max_tokens: 8192 };
+  const body: Record<string, unknown> = { model: model || "claude-sonnet-4-5", messages, max_tokens: 16000 };
   if (systemPrompt) body.system = systemPrompt;
 
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -888,6 +908,12 @@ async function handleChatStream(params: unknown): Promise<void> {
     chat.title = prompt.slice(0, 60) + (prompt.length > 60 ? "…" : "");
   }
 
+  // Feed the current codebase to the AI so it can edit existing code / fix bugs
+  const codebaseContext = buildCodebaseContext(chat?.appId);
+  const fullPrompt = codebaseContext
+    ? `${codebaseContext}\n━━━ USER REQUEST ━━━\n${prompt}`
+    : prompt;
+
   // Emit chunk with the user message immediately so it appears in UI
   fireEvent("chat:response:chunk", {
     chatId,
@@ -930,15 +956,15 @@ async function handleChatStream(params: unknown): Promise<void> {
       const sysPrompt = BROWSER_SYSTEM_PROMPT;
 
       if (provider === "google") {
-        await callGoogleAIStreaming(apiKey, modelName, history, prompt, onChunk, sysPrompt);
+        await callGoogleAIStreaming(apiKey, modelName, history, fullPrompt, onChunk, sysPrompt);
       } else if (provider === "openai") {
-        const text = await callOpenAI(apiKey, modelName, history, prompt, sysPrompt);
+        const text = await callOpenAI(apiKey, modelName, history, fullPrompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else if (provider === "anthropic") {
-        const text = await callAnthropic(apiKey, modelName, history, prompt, sysPrompt);
+        const text = await callAnthropic(apiKey, modelName, history, fullPrompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else if (provider === "openrouter") {
-        const text = await callOpenRouter(apiKey, modelName, history, prompt, sysPrompt);
+        const text = await callOpenRouter(apiKey, modelName, history, fullPrompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else {
         assistantMsg.content = `⚠️ Provider "${provider}" is not yet supported in browser mode. Try Google (free tier available).`;
@@ -994,6 +1020,40 @@ function simulateStreaming(fullText: string, onChunk: (accumulated: string) => v
     accumulated += word;
     onChunk(accumulated);
   }
+}
+
+/**
+ * Builds a context block of the app's current files so the AI can SEE the existing
+ * code and edit it / fix bugs instead of starting from scratch every time.
+ */
+function buildCodebaseContext(appId: number | undefined): string {
+  if (!appId) return "";
+  const fileMap = _appFiles.get(appId);
+  if (!fileMap || fileMap.size === 0) return "";
+
+  const TOTAL_BUDGET = 100000; // ~25k tokens — keep the prompt within model limits
+  const PER_FILE_CAP = 24000;
+  // Prioritize index.html (the entry point) so it's never the file that gets dropped
+  const entries = [...fileMap.entries()].sort(([a], [b]) =>
+    a === "index.html" ? -1 : b === "index.html" ? 1 : 0,
+  );
+
+  let ctx =
+    "━━━ CURRENT CODEBASE (these files already exist — modify them to fix bugs or add features) ━━━\n";
+  let used = 0;
+  for (const [path, content] of entries) {
+    if (used >= TOTAL_BUDGET) {
+      ctx += `\n<file path="${path}">…(omitted — context budget reached)…</file>\n`;
+      continue;
+    }
+    const body =
+      content.length > PER_FILE_CAP ? content.slice(0, PER_FILE_CAP) + "\n…(truncated)…" : content;
+    ctx += `\n<file path="${path}">\n${body}\n</file>\n`;
+    used += body.length;
+  }
+  ctx +=
+    "\nWhen the user asks to change, fix, or improve the app, RE-WRITE the relevant file(s) above with <dyad-write>, keeping all working features intact. Output the COMPLETE updated file, not a diff.\n";
+  return ctx;
 }
 
 /**
@@ -1054,6 +1114,17 @@ function trySetHtmlPreview(chatId: number, aiResponse: string) {
 
   if (!html) return;
 
+  publishHtmlPreview(appId, html);
+}
+
+/**
+ * Inlines local virtual-filesystem references into an HTML document, wraps it in a
+ * blob URL, and fires the app:output event so the preview renders it live.
+ * Shared by the chat-stream preview and the manual file-edit live refresh.
+ */
+function publishHtmlPreview(appId: number | undefined, rawHtml: string) {
+  let html = rawHtml;
+
   // Ensure it's a full HTML document
   if (!html.includes("<html") && !html.includes("<!DOCTYPE")) {
     html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body>${html}</body></html>`;
@@ -1104,8 +1175,16 @@ function trySetHtmlPreview(chatId: number, aiResponse: string) {
   }
 
   try {
+    // Revoke the previous blob URL for this app to avoid leaking one per edit
+    const prevKey = appId ?? -1;
+    const prev = _lastBlobUrls.get(prevKey);
+    if (prev) {
+      try { URL.revokeObjectURL(prev); } catch { /* ignore */ }
+    }
+
     const blob = new Blob([html], { type: "text/html" });
     const blobUrl = URL.createObjectURL(blob);
+    _lastBlobUrls.set(prevKey, blobUrl);
 
     // Fire the event that useRunApp listens for to set the preview URL
     setTimeout(() => {
@@ -1119,6 +1198,22 @@ function trySetHtmlPreview(chatId: number, aiResponse: string) {
   } catch {
     // Blob URLs not supported — silently skip
   }
+}
+
+/** Tracks the latest blob URL per app so the previous one can be revoked on refresh */
+const _lastBlobUrls = new Map<number, string>();
+
+/**
+ * Rebuilds the live preview from the app's current virtual filesystem.
+ * Called after a manual file edit so the preview updates in real time (Replit-style).
+ */
+function refreshPreviewForApp(appId: number | undefined) {
+  if (!appId) return;
+  const fileMap = _appFiles.get(appId);
+  if (!fileMap) return;
+  const indexHtml = fileMap.get("index.html");
+  if (!indexHtml) return;
+  publishHtmlPreview(appId, indexHtml);
 }
 
 function stripChatId(m: StoredMessage) {
@@ -1214,6 +1309,8 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const fileMap = getAppFileMap(appId);
     fileMap.set(filePath, content);
     saveData();
+    // Live-refresh the preview so manual code edits show instantly (Replit-style)
+    refreshPreviewForApp(appId);
     return {};
   },
 
