@@ -27,7 +27,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "node_modules/.bin/vite --config vite.web.config.mts"
+args = "pnpm exec vite --config vite.web.config.mts"
 waitForPort = 5000
 
 [[ports]]
