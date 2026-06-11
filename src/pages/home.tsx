@@ -15,7 +15,6 @@ import { usePostHog } from "posthog-js/react";
 import { PrivacyBanner } from "@/components/TelemetryBanner";
 import { INSPIRATION_PROMPTS } from "@/prompts/inspiration_prompts";
 
-import { ImportAppButton } from "@/components/ImportAppButton";
 import { showError } from "@/lib/toast";
 import { invalidateAppQuery } from "@/hooks/useLoadApp";
 import { useQueryClient } from "@tanstack/react-query";
@@ -28,12 +27,7 @@ import type { FileAttachment } from "@/ipc/types";
 import type { ListedApp } from "@/ipc/types/app";
 import { NEON_TEMPLATE_IDS } from "@/shared/templates";
 import { neonTemplateHook } from "@/client_logic/template_hook";
-import {
-  ProBanner,
-  ManageDyadProButton,
-  SetupDyadProButton,
-} from "@/components/ProBanner";
-import { hasDyadProKey, getEffectiveDefaultChatMode } from "@/lib/schemas";
+import { getEffectiveDefaultChatMode } from "@/lib/schemas";
 import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import { useInitialChatMode } from "@/hooks/useInitialChatMode";
 
@@ -229,13 +223,6 @@ export default function HomePage() {
   return (
     <div className="flex flex-col w-full">
       <div className="flex flex-col items-center justify-center max-w-3xl w-full m-auto p-8 relative">
-        <div className="fixed top-16 right-8 z-50">
-          {settings && hasDyadProKey(settings) ? (
-            <ManageDyadProButton className="mt-0 w-auto h-9 px-3 text-base shadow-sm bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-800" />
-          ) : (
-            <SetupDyadProButton />
-          )}
-        </div>
         <ForceCloseDialog
           isOpen={forceCloseDialogOpen}
           onClose={() => setForceCloseDialogOpen(false)}
@@ -244,9 +231,6 @@ export default function HomePage() {
         <SetupBanner />
 
         <div className="w-full">
-          <div className="flex items-center justify-center gap-4 mb-4">
-            <ImportAppButton className="px-0 pb-0 flex-none" />
-          </div>
           <HomeChatInput onSubmit={handleSubmit} />
 
           <div className="flex flex-col gap-4 mt-2">
@@ -305,7 +289,6 @@ export default function HomePage() {
               </span>
             </button>
           </div>
-          <ProBanner />
         </div>
         <PrivacyBanner />
       </div>

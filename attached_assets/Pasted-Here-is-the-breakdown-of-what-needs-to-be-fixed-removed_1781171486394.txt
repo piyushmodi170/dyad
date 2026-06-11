@@ -1,0 +1,29 @@
+Here is the breakdown of what needs to be fixed, removed, or built next to make Dyad work exactly how you want:
+
+1. Disable GitHub & Local Folder Connections Completely
+Right now, the app tries to offer import options but throws browser-mode errors or handles them with mocks. If you want this to be a streamlined web experience where users cannot connect external GitHub repositories or local folders, we need to strip these entry points out.
+
+The Fix: Remove the "Import App" button from the main dashboard, hide the "Git" tab from the top navigation panel, and remove any GitHub OAuth configuration blocks from the settings.
+
+2. Fix the AI Code Output (Render in Preview, Not Just Chat)
+You mentioned that the AI is just dumping code into the chat box instead of actually building and showing it. The chat should feel interactive, but the actual output needs to be functional.
+
+The Fix: We need to parse the generated HTML/CSS/JS out of the AI's response stream and inject it directly into the Preview Canvas as a live iframe blob URL. When the user clicks "Build", the code should instantly compile and display visually on the right-hand side, rather than forcing them to read raw code in a chat bubble.
+
+3. Manage or Remove "Dyad Pro" Features
+The application is currently showing upsells like "Up to 3x cheaper by using Smart Context" and a "Already have Dyad Pro? Add your key" banner.
+
+The Fix: We need to decide whether to remove these Pro blocks entirely to make everything free/standard, or change them so they connect to a real payment gateway/license key verification system that you control.
+
+4. Create the Admin Panel
+To manage users, keys, and see what people are building, a dedicated administrative interface is required.
+
+The Action Item: Create an /admin route protected by an admin authentication wall.
+
+Features to include:
+
+Dashboard: Total users, total apps built, and active AI token usage.
+
+User Management: Ability to view users, grant/revoke "Pro" access, or block accounts.
+
+Key Management: View, add, or rotate the backend Google Gemini / OpenAI API keys so your users don't have to provide their own.

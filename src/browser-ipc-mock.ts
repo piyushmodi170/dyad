@@ -635,6 +635,9 @@ async function handleChatStream(params: unknown): Promise<void> {
       updatedFiles: false,
       totalTokens: Math.round((prompt.length + assistantMsg.content.length) / 4),
     });
+
+    // After stream ends, try to extract HTML and create a live blob URL preview
+    trySetHtmlPreview(chatId, assistantMsg.content);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     assistantMsg.content = `⚠️ Error: ${message}`;
@@ -655,6 +658,63 @@ function simulateStreaming(fullText: string, onChunk: (accumulated: string) => v
   for (const word of words) {
     accumulated += word;
     onChunk(accumulated);
+  }
+}
+
+/**
+ * Extracts HTML from an AI response and injects it as a blob-URL preview
+ * so the preview panel shows the rendered result instead of "Waiting for server logs".
+ */
+function trySetHtmlPreview(chatId: number, aiResponse: string) {
+  const chat = _chats.get(chatId);
+  if (!chat) return;
+  const appId = chat.appId;
+
+  // Try to extract HTML from dyad-write tags first (Dyad's native format)
+  let html: string | null = null;
+
+  const dyadWriteMatch = aiResponse.match(
+    /<dyad-write[^>]*filename="[^"]*\.html"[^>]*>([\s\S]*?)<\/dyad-write>/i,
+  );
+  if (dyadWriteMatch) {
+    html = dyadWriteMatch[1].trim();
+  }
+
+  // Fallback: look for HTML/markdown code blocks
+  if (!html) {
+    const codeBlockMatch = aiResponse.match(/```(?:html)?\s*\n([\s\S]*?)\n```/i);
+    if (codeBlockMatch && codeBlockMatch[1].trim().startsWith("<")) {
+      html = codeBlockMatch[1].trim();
+    }
+  }
+
+  // Fallback: if the whole response looks like an HTML document
+  if (!html && aiResponse.trim().startsWith("<!DOCTYPE html")) {
+    html = aiResponse.trim();
+  }
+
+  if (!html) return;
+
+  // Ensure it's a full HTML document
+  if (!html.includes("<html") && !html.includes("<!DOCTYPE")) {
+    html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body>${html}</body></html>`;
+  }
+
+  try {
+    const blob = new Blob([html], { type: "text/html" });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // Fire the event that useRunApp listens for to set the preview URL
+    setTimeout(() => {
+      fireEvent("app:output", {
+        type: "info",
+        message: `[dyad-proxy-server]started=[${blobUrl}]original=[${blobUrl}]mode=[host]`,
+        appId,
+        timestamp: Date.now(),
+      });
+    }, 150);
+  } catch {
+    // Blob URLs not supported — silently skip
   }
 }
 
