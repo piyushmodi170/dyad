@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { useAtom, useSetAtom } from "jotai";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ import { CollectionDetailView } from "@/components/CollectionDetailView";
 import { AddOrEditCollectionDialog } from "@/components/AddOrEditCollectionDialog";
 import { AssignAppsToCollectionDialog } from "@/components/AssignAppsToCollectionDialog";
 import { DeleteCollectionDialog } from "@/components/DeleteCollectionDialog";
+import { ImportAppDialog } from "@/components/ImportAppDialog";
 
 export default function AppsPage() {
   const navigate = useNavigate();
@@ -61,6 +63,7 @@ export default function AppsPage() {
     useState<AppCollection | null>(null);
   const [deletingCollection, setDeletingCollection] =
     useState<AppCollection | null>(null);
+  const [isImportAppDialogOpen, setIsImportAppDialogOpen] = useState(false);
 
   const openCollection = useMemo(
     () =>
@@ -187,18 +190,29 @@ export default function AppsPage() {
 
         <header className="mb-6 flex items-end justify-between gap-3">
           <h1 className="text-3xl font-bold">Apps</h1>
-          {view === "apps" && !isSelectionMode && apps.length > 0 && (
+          <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={handleEnterSelectionMode}
-              data-testid="apps-gallery-select-button"
+              onClick={() => setIsImportAppDialogOpen(true)}
               className="flex items-center gap-2"
             >
-              <CheckSquare className="h-4 w-4" />
-              Select
+              <Upload className="h-4 w-4" />
+              Import App
             </Button>
-          )}
+            {view === "apps" && !isSelectionMode && apps.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleEnterSelectionMode}
+                data-testid="apps-gallery-select-button"
+                className="flex items-center gap-2"
+              >
+                <CheckSquare className="h-4 w-4" />
+                Select
+              </Button>
+            )}
+          </div>
         </header>
 
         <div className="mb-4">
@@ -497,6 +511,11 @@ export default function AppsPage() {
           }
           setDeletingCollection(null);
         }}
+      />
+
+      <ImportAppDialog
+        isOpen={isImportAppDialogOpen}
+        onClose={() => setIsImportAppDialogOpen(false)}
       />
     </div>
   );
