@@ -308,7 +308,105 @@ function addMessage(msg: StoredMessage) {
   const list = _messagesByChatId.get(msg.chatId) ?? [];
   list.push(msg);
   _messagesByChatId.set(msg.chatId, list);
+  saveData();
 }
+
+// =============================================================================
+// Persistence — save/load all in-memory state to localStorage
+// =============================================================================
+
+const DATA_STORAGE_KEY = "dyad-browser-ipc-data";
+
+function saveData(): void {
+  try {
+    const data = {
+      nextId: _nextId,
+      apps: Array.from(_apps.entries()).map(([id, app]) => [
+        id,
+        { ...app, createdAt: app.createdAt.toISOString(), updatedAt: app.updatedAt.toISOString() },
+      ]),
+      chats: Array.from(_chats.entries()).map(([id, chat]) => [
+        id,
+        { ...chat, createdAt: chat.createdAt.toISOString() },
+      ]),
+      messagesByChatId: Array.from(_messagesByChatId.entries()).map(([chatId, msgs]) => [
+        chatId,
+        msgs.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
+      ]),
+      appFiles: Array.from(_appFiles.entries()).map(([appId, fileMap]) => [
+        appId,
+        Array.from(fileMap.entries()),
+      ]),
+    };
+    localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "QuotaExceededError") {
+      try {
+        const dataNoFiles = {
+          nextId: _nextId,
+          apps: Array.from(_apps.entries()).map(([id, app]) => [
+            id,
+            { ...app, createdAt: app.createdAt.toISOString(), updatedAt: app.updatedAt.toISOString() },
+          ]),
+          chats: Array.from(_chats.entries()).map(([id, chat]) => [
+            id,
+            { ...chat, createdAt: chat.createdAt.toISOString() },
+          ]),
+          messagesByChatId: Array.from(_messagesByChatId.entries()).map(([chatId, msgs]) => [
+            chatId,
+            msgs.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
+          ]),
+          appFiles: [],
+        };
+        localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify(dataNoFiles));
+      } catch {
+        console.warn("[browser-ipc-mock] localStorage quota exceeded — data not fully saved");
+      }
+    }
+  }
+}
+
+function loadData(): void {
+  try {
+    const raw = localStorage.getItem(DATA_STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw) as {
+      nextId?: number;
+      apps?: Array<[number, Record<string, unknown>]>;
+      chats?: Array<[number, Record<string, unknown>]>;
+      messagesByChatId?: Array<[number, Array<Record<string, unknown>>]>;
+      appFiles?: Array<[number, Array<[string, string]>]>;
+    };
+    if (typeof data.nextId === "number") _nextId = data.nextId;
+    for (const [id, app] of data.apps ?? []) {
+      _apps.set(Number(id), {
+        ...(app as object),
+        createdAt: new Date(app.createdAt as string),
+        updatedAt: new Date(app.updatedAt as string),
+      } as StoredApp);
+    }
+    for (const [id, chat] of data.chats ?? []) {
+      _chats.set(Number(id), {
+        ...(chat as object),
+        createdAt: new Date(chat.createdAt as string),
+      } as StoredChat);
+    }
+    for (const [chatId, msgs] of data.messagesByChatId ?? []) {
+      _messagesByChatId.set(Number(chatId), msgs.map((m) => ({
+        ...(m as object),
+        createdAt: new Date(m.createdAt as string),
+      } as StoredMessage)));
+    }
+    for (const [appId, fileEntries] of data.appFiles ?? []) {
+      _appFiles.set(Number(appId), new Map(fileEntries));
+    }
+    console.debug(`[browser-ipc-mock] Loaded ${_apps.size} apps, ${_chats.size} chats from storage`);
+  } catch (e) {
+    console.warn("[browser-ipc-mock] Failed to load persisted data:", e);
+  }
+}
+
+loadData();
 
 // =============================================================================
 // Event emitter (enables chat:stream events to fire back to listeners)
@@ -748,6 +846,7 @@ async function handleChatStream(params: unknown): Promise<void> {
           fileMap.set(path, content);
         }
         updatedFiles = true;
+        saveData();
       }
     }
 
@@ -928,6 +1027,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const chat = makeChat(app.id);
     _chats.set(chat.id, chat);
     _messagesByChatId.set(chat.id, []);
+    saveData();
     return { app, chatId: chat.id };
   },
 
@@ -954,6 +1054,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const { appId, filePath, content } = params as { appId: number; filePath: string; content: string };
     const fileMap = getAppFileMap(appId);
     fileMap.set(filePath, content);
+    saveData();
     return {};
   },
 
@@ -979,6 +1080,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "delete-app": (params: unknown) => {
     const { appId } = params as { appId: number };
     _apps.delete(appId);
+    saveData();
     return null;
   },
 
@@ -988,6 +1090,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
       _apps.delete(appId);
       return { appId, success: true };
     });
+    saveData();
     return { results };
   },
 
@@ -999,6 +1102,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     _apps.set(copy.id, copy);
     const chat = makeChat(copy.id);
     _chats.set(chat.id, chat);
+    saveData();
     return { app: copy, chatId: chat.id };
   },
 
@@ -1006,6 +1110,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const { appId, name } = params as { appId: number; name: string };
     const app = _apps.get(appId);
     if (app) { app.name = name; app.updatedAt = new Date(); }
+    saveData();
     return null;
   },
 
@@ -1109,12 +1214,13 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const chat = makeChat(appId);
     _chats.set(chat.id, chat);
     _messagesByChatId.set(chat.id, []);
+    saveData();
     return chat.id;
   },
 
   "update-chat": null,
-  "delete-chat": (chatId: unknown) => { _chats.delete(chatId as number); return null; },
-  "delete-messages": (chatId: unknown) => { _messagesByChatId.set(chatId as number, []); return null; },
+  "delete-chat": (chatId: unknown) => { _chats.delete(chatId as number); saveData(); return null; },
+  "delete-messages": (chatId: unknown) => { _messagesByChatId.set(chatId as number, []); saveData(); return null; },
   "search-chats": [],
 
   "chat:stream": (params: unknown) => {
@@ -1425,6 +1531,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
       const chat = makeChat(app.id);
       _chats.set(chat.id, chat);
       _messagesByChatId.set(chat.id, []);
+      saveData();
 
       return {
         app: {
@@ -1507,6 +1614,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
     const chat = makeChat(app.id);
     _chats.set(chat.id, chat);
     _messagesByChatId.set(chat.id, []);
+    saveData();
     return { appId: app.id, chatId: chat.id };
   },
   "check-app-name": (params: unknown) => {
