@@ -22,6 +22,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { ForceCloseDialog } from "@/components/ForceCloseDialog";
 import { useSelectChat } from "@/hooks/useSelectChat";
 import { FeaturedAppShowcase } from "@/components/FeaturedAppShowcase";
+import { ImportAppDialog } from "@/components/ImportAppDialog";
+import { Upload } from "lucide-react";
 
 import type { FileAttachment } from "@/ipc/types";
 import type { ListedApp } from "@/ipc/types/app";
@@ -53,6 +55,7 @@ export default function HomePage() {
   const [loadingMode, setLoadingMode] = useState<"new" | "existing">("new");
   const [forceCloseDialogOpen, setForceCloseDialogOpen] = useState(false);
   const [performanceData, setPerformanceData] = useState<any>(undefined);
+  const [isImportAppDialogOpen, setIsImportAppDialogOpen] = useState(false);
   const { streamMessage } = useStreamChat({ hasChatId: false });
   const posthog = usePostHog();
   const queryClient = useQueryClient();
@@ -233,6 +236,23 @@ export default function HomePage() {
         <div className="w-full">
           <HomeChatInput onSubmit={handleSubmit} />
 
+          <div className="flex justify-center mt-3">
+            <button
+              type="button"
+              onClick={() => setIsImportAppDialogOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-200
+                       bg-white/50 backdrop-blur-sm text-sm font-medium text-gray-600
+                       transition-all duration-200
+                       hover:bg-white hover:shadow-md hover:border-gray-300
+                       active:scale-[0.98]
+                       dark:bg-gray-800/50 dark:border-gray-700 dark:text-gray-400
+                       dark:hover:bg-gray-800 dark:hover:border-gray-600"
+            >
+              <Upload className="w-4 h-4" />
+              Import existing app (GitHub / local folder)
+            </button>
+          </div>
+
           <div className="flex flex-col gap-4 mt-2">
             <div className="flex flex-wrap gap-4 justify-center">
               {randomPrompts.map((item, index) => (
@@ -293,6 +313,10 @@ export default function HomePage() {
         <PrivacyBanner />
       </div>
       <FeaturedAppShowcase />
+      <ImportAppDialog
+        isOpen={isImportAppDialogOpen}
+        onClose={() => setIsImportAppDialogOpen(false)}
+      />
     </div>
   );
 }
