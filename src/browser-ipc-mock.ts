@@ -1041,6 +1041,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "search-app": [],
   "change-app-location": null,
   "select-app-location": null,
+  "select-app-for-preview": null,
   "get-cloud-sandbox-status": null,
   "app:get-current-commit-hash": null,
   "app:list-screenshots": [],
@@ -1390,6 +1391,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "github:merge-branch": null,
   "github:get-conflicts": [],
   "github:get-git-state": null,
+  "git:get-uncommitted-files": () => [],
   "github:disconnect": (_params: unknown) => {
     (_currentSettings as Record<string, unknown>).githubAccessToken = undefined;
     saveSettings(_currentSettings);

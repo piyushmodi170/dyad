@@ -36,4 +36,15 @@ Settings are stored in `localStorage` under key `"dyad-browser-ipc-settings"`. T
 ### @shikijs symlinks
 Manual absolute symlinks needed in `node_modules/@shikijs/{themes,langs,core,types}` → `node_modules/.pnpm/@shikijs+*@3.23.0/...`
 
+### ChatPanel null-chat crash
+`ipc.chat.getChat()` returns null when the chat doesn't exist in-memory (e.g. after a page reload). `ChatPanel.fetchChatMessages` must guard: `if (!chat) return;` before `chat.messages`. The browser logs the real error as an `unhandledrejection`, not a route render error.
+
+### Polling channels that must return arrays
+These are called on a short interval (~5s) and crash or warn if unhandled:
+- `git:get-uncommitted-files` → `[]`
+- `select-app-for-preview` → `null` (void return, no crash)
+
+### HMR caveat for mock changes
+`installBrowserIpcMock()` runs once on page load and captures the `CHANNEL_DEFAULTS` object reference. HMR alone won't re-run `installBrowserIpcMock()` — new channel handlers only take effect after a full page reload.
+
 **How to apply:** Any time browser-ipc-mock.ts is modified, verify these five things: (1) event emitter is real, (2) create-app returns proper shape, (3) models-by-providers returns populated data for configured providers, (4) settings are persisted to localStorage, (5) providerSettingsRoute is a top-level route.

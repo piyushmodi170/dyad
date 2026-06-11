@@ -160,6 +160,7 @@ export function ChatPanel({
     const chat = await ipc.chat.getChat(chatId);
     // Re-check after the async fetch: streaming may have started while in flight.
     if (store.get(isStreamingByIdAtom).get(chatId)) return;
+    if (!chat) return;
     setMessagesById((prev) => {
       const next = new Map(prev);
       next.set(chatId, chat.messages);
