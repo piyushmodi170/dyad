@@ -1216,6 +1216,42 @@ function refreshPreviewForApp(appId: number | undefined) {
   publishHtmlPreview(appId, indexHtml);
 }
 
+/**
+ * Handles run-app / restart-app (Rebuild). Builds a live blob-URL preview from the
+ * app's current files. If no index.html exists yet, shows a gentle hint instead of
+ * a hard "not available" error so the preview never gets stuck in an error state.
+ */
+function runAppPreview(appId: number | undefined) {
+  if (!appId) return;
+  const fileMap = _appFiles.get(appId);
+  const indexHtml = fileMap?.get("index.html");
+
+  if (indexHtml) {
+    publishHtmlPreview(appId, indexHtml);
+    return;
+  }
+
+  // No HTML entry point yet — render a friendly placeholder so the preview panel
+  // doesn't hang on "Connecting to app…" (and never show a hard error).
+  const placeholder = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  html,body{height:100%;margin:0}
+  body{display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;
+       background:#0b0f19;color:#e5e7eb;text-align:center;padding:24px}
+  .card{max-width:420px}
+  .emoji{font-size:48px;margin-bottom:12px}
+  h1{font-size:20px;margin:0 0 8px;font-weight:600}
+  p{font-size:14px;line-height:1.5;color:#9ca3af;margin:0}
+</style></head>
+<body><div class="card">
+  <div class="emoji">✨</div>
+  <h1>No preview yet</h1>
+  <p>Ask Dyad to build something in the chat. It generates a self-contained app that renders here live — and updates in real time as you edit.</p>
+</div></body></html>`;
+  publishHtmlPreview(appId, placeholder);
+}
+
 function stripChatId(m: StoredMessage) {
   return {
     id: m.id,
@@ -1372,33 +1408,16 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
 
   "run-app": (params: unknown) => {
     const appId = (params as { appId: number }).appId;
-    // Emit messages so the preview panel shows a browser-mode notice instead of hanging
-    setTimeout(() => {
-      fireEvent("app:output", {
-        type: "stderr",
-        message: "⚠️  Live preview is not available in browser mode.",
-        appId,
-        timestamp: Date.now(),
-      });
-      fireEvent("app:output", {
-        type: "stderr",
-        message: "Run Dyad as a desktop Electron app for full preview & file-system features.",
-        appId,
-        timestamp: Date.now() + 1,
-      });
-      // Signal the process exited so the UI shows an error state vs. "Waiting for server logs…"
-      fireEvent("app:output", {
-        type: "app-exit",
-        message: "Process exited (browser mode — no runtime available).",
-        appId,
-        exitCode: 1,
-        timestamp: Date.now() + 2,
-      });
-    }, 200);
+    runAppPreview(appId);
     return null;
   },
   "stop-app": null,
-  "restart-app": null,
+  "restart-app": (params: unknown) => {
+    const appId = (params as { appId: number }).appId;
+    // The "Rebuild" button calls this — rebuild the live preview from current files
+    runAppPreview(appId);
+    return null;
+  },
   "search-app": [],
   "change-app-location": null,
   "select-app-location": null,
