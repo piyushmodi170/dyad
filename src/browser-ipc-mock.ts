@@ -199,6 +199,65 @@ function stopGithubPoll() {
   }
 }
 
+// =============================================================================
+// Browser virtual filesystem — stores AI-generated files per app
+// =============================================================================
+
+const _appFiles = new Map<number, Map<string, string>>();
+
+function getAppFileMap(appId: number): Map<string, string> {
+  let map = _appFiles.get(appId);
+  if (!map) {
+    map = new Map();
+    _appFiles.set(appId, map);
+  }
+  return map;
+}
+
+/** Browser-safe parser for <dyad-write path="..."> tags */
+function parseBrowserDyadWriteTags(response: string): Array<{ path: string; content: string }> {
+  const regex = /<dyad-write([^>]*)>([\s\S]*?)<\/dyad-write>/gi;
+  const pathAttr = /\bpath="([^"]+)"/;
+  const results: Array<{ path: string; content: string }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(response)) !== null) {
+    const attrStr = match[1];
+    const pathMatch = pathAttr.exec(attrStr);
+    if (!pathMatch) continue;
+    let content = match[2].trim();
+    const lines = content.split("\n");
+    if (lines[0]?.startsWith("```")) lines.shift();
+    if (lines[lines.length - 1]?.startsWith("```")) lines.pop();
+    content = lines.join("\n");
+    results.push({ path: pathMatch[1], content });
+  }
+  return results;
+}
+
+// =============================================================================
+// System prompt for browser mode — tells AI to use dyad-write tags
+// =============================================================================
+
+const BROWSER_SYSTEM_PROMPT = `You are Dyad, an expert AI app builder.
+
+IMPORTANT: When creating or editing files you MUST use <dyad-write> tags — never use markdown code fences (triple backticks) alone for complete files.
+
+Format:
+<dyad-write path="index.html">
+...complete file content...
+</dyad-write>
+
+Rules:
+- Wrap ALL file content in <dyad-write path="relative/path"> tags
+- Use realistic paths: "index.html", "src/App.jsx", "src/styles.css", etc.
+- Write complete, self-contained files — no placeholders or partial snippets
+- For browser preview, always include an "index.html" that loads the app
+- For React apps, create proper JSX component files and link them in index.html
+- Keep your prose explanations brief; the code is what matters
+- You may use <think>...</think> to plan before responding
+
+The user will see your code in a file editor with syntax highlighting and a live preview.`;
+
 function makeApp(name: string): StoredApp {
   const id = nextId();
   const now = new Date();
@@ -381,6 +440,7 @@ async function callGoogleAI(
   model: string,
   history: { role: string; content: string }[],
   newPrompt: string,
+  systemPrompt?: string,
 ): Promise<string> {
   const allMessages = [...history, { role: "user", content: newPrompt }];
   const contents = allMessages.map((m) => ({
@@ -391,13 +451,13 @@ async function callGoogleAI(
   const safeModel = model || "gemini-flash-latest";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:generateContent?key=${apiKey}`;
 
+  const body: Record<string, unknown> = { contents, generationConfig: { maxOutputTokens: 8192 } };
+  if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };
+
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents,
-      generationConfig: { maxOutputTokens: 8192 },
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
@@ -416,6 +476,7 @@ async function callGoogleAIStreaming(
   history: { role: string; content: string }[],
   newPrompt: string,
   onChunk: (accumulated: string) => void,
+  systemPrompt?: string,
 ): Promise<void> {
   const allMessages = [...history, { role: "user", content: newPrompt }];
   const contents = allMessages.map((m) => ({
@@ -426,13 +487,13 @@ async function callGoogleAIStreaming(
   const safeModel = model || "gemini-flash-latest";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:streamGenerateContent?key=${apiKey}&alt=sse`;
 
+  const body: Record<string, unknown> = { contents, generationConfig: { maxOutputTokens: 8192 } };
+  if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };
+
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents,
-      generationConfig: { maxOutputTokens: 8192 },
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
@@ -495,11 +556,12 @@ async function callOpenAI(
   model: string,
   history: { role: string; content: string }[],
   newPrompt: string,
+  systemPrompt?: string,
 ): Promise<string> {
-  const messages = [
-    ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-    { role: "user" as const, content: newPrompt },
-  ];
+  const messages: Array<{ role: string; content: string }> = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  messages.push(...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+  messages.push({ role: "user", content: newPrompt });
 
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -524,11 +586,15 @@ async function callAnthropic(
   model: string,
   history: { role: string; content: string }[],
   newPrompt: string,
+  systemPrompt?: string,
 ): Promise<string> {
   const messages = [
     ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
     { role: "user" as const, content: newPrompt },
   ];
+
+  const body: Record<string, unknown> = { model: model || "claude-sonnet-4-5", messages, max_tokens: 8192 };
+  if (systemPrompt) body.system = systemPrompt;
 
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -538,7 +604,7 @@ async function callAnthropic(
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
-    body: JSON.stringify({ model: model || "claude-sonnet-4-5", messages, max_tokens: 8192 }),
+    body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
@@ -555,11 +621,12 @@ async function callOpenRouter(
   model: string,
   history: { role: string; content: string }[],
   newPrompt: string,
+  systemPrompt?: string,
 ): Promise<string> {
-  const messages = [
-    ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-    { role: "user" as const, content: newPrompt },
-  ];
+  const messages: Array<{ role: string; content: string }> = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  messages.push(...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+  messages.push({ role: "user", content: newPrompt });
 
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -639,16 +706,18 @@ async function handleChatStream(params: unknown): Promise<void> {
         });
       };
 
+      const sysPrompt = BROWSER_SYSTEM_PROMPT;
+
       if (provider === "google") {
-        await callGoogleAIStreaming(apiKey, modelName, history, prompt, onChunk);
+        await callGoogleAIStreaming(apiKey, modelName, history, prompt, onChunk, sysPrompt);
       } else if (provider === "openai") {
-        const text = await callOpenAI(apiKey, modelName, history, prompt);
+        const text = await callOpenAI(apiKey, modelName, history, prompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else if (provider === "anthropic") {
-        const text = await callAnthropic(apiKey, modelName, history, prompt);
+        const text = await callAnthropic(apiKey, modelName, history, prompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else if (provider === "openrouter") {
-        const text = await callOpenRouter(apiKey, modelName, history, prompt);
+        const text = await callOpenRouter(apiKey, modelName, history, prompt, sysPrompt);
         simulateStreaming(text, onChunk);
       } else {
         assistantMsg.content = `⚠️ Provider "${provider}" is not yet supported in browser mode. Try Google (free tier available).`;
@@ -659,9 +728,24 @@ async function handleChatStream(params: unknown): Promise<void> {
       }
     }
 
+    // Parse dyad-write tags from the final response and store into virtual filesystem
+    const chat2 = _chats.get(chatId);
+    const appId = chat2?.appId;
+    let updatedFiles = false;
+    if (appId) {
+      const writtenFiles = parseBrowserDyadWriteTags(assistantMsg.content);
+      if (writtenFiles.length > 0) {
+        const fileMap = getAppFileMap(appId);
+        for (const { path, content } of writtenFiles) {
+          fileMap.set(path, content);
+        }
+        updatedFiles = true;
+      }
+    }
+
     fireEvent("chat:response:end", {
       chatId,
-      updatedFiles: false,
+      updatedFiles,
       totalTokens: Math.round((prompt.length + assistantMsg.content.length) / 4),
     });
 
@@ -702,11 +786,35 @@ function trySetHtmlPreview(chatId: number, aiResponse: string) {
   // Try to extract HTML from dyad-write tags first (Dyad's native format)
   let html: string | null = null;
 
-  const dyadWriteMatch = aiResponse.match(
-    /<dyad-write[^>]*filename="[^"]*\.html"[^>]*>([\s\S]*?)<\/dyad-write>/i,
-  );
-  if (dyadWriteMatch) {
-    html = dyadWriteMatch[1].trim();
+  // Check virtual filesystem for index.html first
+  if (appId) {
+    const fileMap = _appFiles.get(appId);
+    if (fileMap) {
+      const indexHtml = fileMap.get("index.html");
+      if (indexHtml) {
+        html = indexHtml;
+      }
+    }
+  }
+
+  // Also scan the raw response for dyad-write tags (path attribute, not filename)
+  if (!html) {
+    const dyadWriteMatch = aiResponse.match(
+      /<dyad-write[^>]*\spath="([^"]*\.html)"[^>]*>([\s\S]*?)<\/dyad-write>/i,
+    );
+    if (dyadWriteMatch) {
+      html = dyadWriteMatch[2].trim();
+    }
+  }
+
+  // Legacy: filename attribute
+  if (!html) {
+    const legacyMatch = aiResponse.match(
+      /<dyad-write[^>]*filename="[^"]*\.html"[^>]*>([\s\S]*?)<\/dyad-write>/i,
+    );
+    if (legacyMatch) {
+      html = legacyMatch[1].trim();
+    }
   }
 
   // Fallback: look for HTML/markdown code blocks
@@ -797,7 +905,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "list-apps": () => ({
     apps: Array.from(_apps.values()).map((a) => ({
       ...a,
-      files: [],
+      files: Array.from(_appFiles.get(a.id)?.keys() ?? []),
       frameworkType: null,
       supabaseProjectName: null,
       vercelTeamSlug: null,
@@ -818,7 +926,46 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "get-app": (appId: unknown) => {
     const app = _apps.get(appId as number);
     if (!app) return null;
-    return { ...app, files: [], frameworkType: null, supabaseProjectName: null, vercelTeamSlug: null };
+    return {
+      ...app,
+      files: Array.from(_appFiles.get(app.id)?.keys() ?? []),
+      frameworkType: null,
+      supabaseProjectName: null,
+      vercelTeamSlug: null,
+    };
+  },
+
+  "read-app-file": (params: unknown) => {
+    const { appId, filePath } = params as { appId: number; filePath: string };
+    const fileMap = _appFiles.get(appId);
+    if (!fileMap) return null;
+    return fileMap.get(filePath) ?? null;
+  },
+
+  "edit-app-file": (params: unknown) => {
+    const { appId, filePath, content } = params as { appId: number; filePath: string; content: string };
+    const fileMap = getAppFileMap(appId);
+    fileMap.set(filePath, content);
+    return {};
+  },
+
+  "search-app-files": (params: unknown) => {
+    const { appId, query } = params as { appId: number; query: string };
+    const fileMap = _appFiles.get(appId);
+    if (!fileMap) return { results: [] };
+    const lowerQuery = query.toLowerCase();
+    const results: Array<{ filePath: string; snippet: string; lineNumber: number }> = [];
+    for (const [filePath, content] of fileMap.entries()) {
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(lowerQuery)) {
+          results.push({ filePath, snippet: lines[i].trim(), lineNumber: i + 1 });
+          if (results.length >= 20) break;
+        }
+      }
+      if (results.length >= 20) break;
+    }
+    return { results };
   },
 
   "delete-app": (params: unknown) => {
@@ -1258,7 +1405,13 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
       _messagesByChatId.set(chat.id, []);
 
       return {
-        app: { ...app, files: [], frameworkType: null, supabaseProjectName: null, vercelTeamSlug: null },
+        app: {
+          ...app,
+          files: Array.from(_appFiles.get(app.id)?.keys() ?? []),
+          frameworkType: null,
+          supabaseProjectName: null,
+          vercelTeamSlug: null,
+        },
         hasAiRules: false,
       };
     } catch (err) {

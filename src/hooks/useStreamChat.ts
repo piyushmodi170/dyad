@@ -422,6 +422,10 @@ export function useStreamChat({
                   refreshAppIframe();
                   if (targetAppId) {
                     setPendingScreenshotAppId(targetAppId);
+                    // Refresh file tree by invalidating the app detail query
+                    queryClient.invalidateQueries({
+                      queryKey: queryKeys.apps.detail({ appId: targetAppId }),
+                    });
                   }
                   if (settings?.enableAutoFixProblems && targetAppId) {
                     queryClient.invalidateQueries({
