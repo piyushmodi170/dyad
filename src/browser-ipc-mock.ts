@@ -70,8 +70,12 @@ function buildDefaultSettings() {
     selectedTemplateId: "react-vite",
     enableAutoUpdate: false,
     releaseChannel: "stable",
-    enableDyadPro: false,
+    enableDyadPro: true,
+    // Fake auto key so hasDyadProKey() returns true — unlocks Pro UI in browser mode
+    // (browser mock never routes calls to the auto/managed provider)
   };
+  defaults.providerSettings.auto = { apiKey: { value: "browser-mode-pro-unlocked" } };
+  return defaults;
 }
 
 const STORAGE_KEY = "dyad-browser-ipc-settings";
@@ -83,7 +87,7 @@ function loadSettings() {
       const parsed = JSON.parse(raw);
       // Merge env-seeded defaults with persisted settings so env keys work too
       const defaults = buildDefaultSettings();
-      return {
+      const merged = {
         ...defaults,
         ...parsed,
         providerSettings: {
@@ -91,6 +95,10 @@ function loadSettings() {
           ...(parsed.providerSettings ?? {}),
         },
       };
+      // Always keep Pro enabled regardless of stored value
+      merged.enableDyadPro = true;
+      merged.providerSettings.auto = defaults.providerSettings.auto;
+      return merged;
     }
   } catch {
     // ignore corrupted storage
@@ -1204,8 +1212,20 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
   "show-item-in-folder": null,
   "open-file-path": null,
   "clear-session-data": null,
-  "get-user-budget": null,
-  "system:get-user-budget": null,
+  "get-user-budget": {
+    usedCredits: 0,
+    totalCredits: 999999,
+    budgetResetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    redactedUserId: "browser-user",
+    isTrial: false,
+  },
+  "system:get-user-budget": {
+    usedCredits: 0,
+    totalCredits: 999999,
+    budgetResetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    redactedUserId: "browser-user",
+    isTrial: false,
+  },
   "window:minimize": null,
   "window:maximize": null,
   "window:close": null,
@@ -1213,7 +1233,7 @@ const CHANNEL_DEFAULTS: Record<string, unknown | ((...args: unknown[]) => unknow
 
   // ── Env / debug ───────────────────────────────────────────────────────────
   "get-env-vars": {},
-  "get-app-env-vars": {},
+  "get-app-env-vars": [],
   "set-app-env-vars": null,
   "get-session-debug-bundle": null,
   "add-log": null,
@@ -1560,6 +1580,13 @@ export function installBrowserIpcMock(): void {
   };
 
   (win as typeof window & { __DYAD_BROWSER_MODE__?: boolean }).__DYAD_BROWSER_MODE__ = true;
+
+  // Mark user as Pro in localStorage so isDyadProUser() returns true
+  try {
+    window.localStorage.setItem("dyadProStatus", "true");
+  } catch {
+    // ignore storage errors in sandboxed iframes
+  }
 
   console.info(
     "[browser-ipc-mock] Electron IPC not available — installed browser mock. " +
